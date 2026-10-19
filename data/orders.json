@@ -1,0 +1,47 @@
+[
+  {
+    "order_id": "10001",
+    "status": "已发货",
+    "product": "无线蓝牙耳机",
+    "price": 199,
+    "original_price": 259,
+    "created_at": "2026-10-12 10:23",
+    "tracking_no": "SF1234567890"
+  },
+  {
+    "order_id": "10002",
+    "status": "待发货",
+    "product": "智能手机 X1",
+    "price": 4999,
+    "original_price": 5499,
+    "created_at": "2026-10-16 19:40",
+    "tracking_no": null
+  },
+  {
+    "order_id": "10003",
+    "status": "已签收",
+    "product": "生鲜水果礼盒",
+    "price": 89,
+    "original_price": 129,
+    "created_at": "2026-10-10 08:15",
+    "tracking_no": "JD9988776655"
+  },
+  {
+    "order_id": "10004",
+    "status": "已退款",
+    "product": "定制鼠标垫",
+    "price": 299,
+    "original_price": 299,
+    "created_at": "2026-10-05 14:02",
+    "tracking_no": null
+  },
+  {
+    "order_id": "10005",
+    "status": "已签收",
+    "product": "机械键盘",
+    "price": 1299,
+    "original_price": 1599,
+    "created_at": "2026-10-14 21:10",
+    "tracking_no": "YT7788990011"
+  }
+]
