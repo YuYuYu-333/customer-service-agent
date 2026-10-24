@@ -1,0 +1,91 @@
+"""
+HTTP 接口层.
+把 agent.run_agent 暴露成 HTTP接口
+负责会话隔离、参数校验、异常转换和耗时统计.
+不负责对话逻辑,也不负责上下文裁剪.
+"""
+
+import logging
+import time
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+from app.agent import SYSTEM_PROMPT, run_agent
+from app.tools import get_order_status
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="智能客服 Agent")
+
+# 会话存在进程内存里.多 worker 部署时每个进程一份,会话会串;进程重启即丢失.
+# 生产环境应换成 Redis,理由:跨进程共享、可持久化、支持 TTL 自动回收.
+_sessions: dict[str, list[dict]] = {}
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="用户提问",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="不传表示开启新对话",
+    )
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    session_id: str
+    tools_used: int
+    tokens: int
+    latency_ms: int
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/orders/{order_id}")
+async def read_order(order_id: str):
+    """直接查订单,不经过模型.用来把"数据错"和"模型错"区分开"""
+    order = get_order_status(order_id)
+    if "error" in order:
+        raise HTTPException(status_code=404, detail=order["error"])
+    return order
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    session_id = req.session_id or uuid4().hex
+
+    history = _sessions.get(session_id)
+    if history is None:
+        history = [{"role": "system", "content": SYSTEM_PROMPT}]
+        _sessions[session_id] = history
+
+    # 记下长度,失败时按这个位置回滚.
+    before = len(history)
+    history.append({"role": "user", "content": req.message})
+
+    started = time.perf_counter()
+    try:
+        result = await run_agent(history)
+    except Exception:
+        logger.exception("会话 %s 处理失败", session_id)
+        del history[before:]
+        raise HTTPException(status_code=500, detail="服务器暂时不可用,请稍后重试")
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    return ChatResponse(
+        reply=result.reply,
+        session_id=session_id,
+        tools_used=result.tool_calls_used,
+        tokens=result.prompt_tokens,
+        latency_ms=latency_ms,
+    )

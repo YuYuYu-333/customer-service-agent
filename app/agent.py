@@ -5,12 +5,14 @@ Agent 主循环
 不负责 HTTP 服务,也不负责多用户会话存储
 """
 
+import asyncio
 import json
 import logging
+from typing import NamedTuple
 
 from app.llm import CHAT_MODEL, chat_client
-from app.tools import FUNCTIONS, TOOLS
 from app.memory import pinned_questions, trim
+from app.tools import FUNCTIONS, TOOLS
 
 # 单次用户提问允许的工具调用总次数
 # 实测4次足够覆盖"查订单+算差价"这类组合,
@@ -24,7 +26,9 @@ SYSTEM_PROMPT = """你是电商平台的客服助手.
 1. 订单、物流、金额、政策条款等事实性内容,只能来自工具返回结果,不要凭印象编造。如果工具返回的材料里没有相关内容,就如实说没有,不要用常识补充。
 2. 工具返回 error 时,如实告诉用户查不到,并请用户确认信息,不要自己猜。
 3. 回答简洁,先给结论再给依据。
-4. 用户的问题超出客服范围时,礼貌说明无法处理。"""
+4. 用户的问题超出客服范围时,礼貌说明无法处理。
+5. 只回答用户问到的问题。要补充用户没问的内容,必须先检索到依据,否则不要提。
+6. 检索只覆盖政策文档的一部分。说"没有规定"时要限定为"我这次查到的内容里没有",不要说成"政策里没有";并建议用户进一步确认。"""
 
 # 工具预算用完时返回给模型的占位结果.
 # 协议要求每个 tool_call 都必须有对应的 tool 消息,否则下一次请求直接 400.
@@ -32,6 +36,14 @@ _BUDGET_EXCEEDED = json.dumps(
     {"error": "本次对话的工具调用次数已达上限,请基于已有信息直接回答用户"},
     ensure_ascii=False,
 )
+
+
+class AgentResult(NamedTuple):
+    """一次 Agent 循环的结果."""
+
+    reply: str
+    tool_calls_used: int
+    prompt_tokens: int
 
 
 def _execute(tool_call):
@@ -67,14 +79,15 @@ def _execute(tool_call):
     return json.dumps(result, ensure_ascii=False)
 
 
-def run_agent(messages):
+async def run_agent(messages):
     """
-    跑完一次完整的 Agent 循环,返回最终回答
+    跑完一次完整的 Agent 循环,返回本轮的回答和工具调用次数
     :param messages: 完整对话历史,含 system 和本轮用户消息.函数会就地追加内容
-    :return: 模型的最终回答文本
+    :return: AgentResult,含 reply 和 tool_calls_used
     """
     tool_calls_used = 0
     tools_enabled = True
+    prompt_tokens = 0
 
     while True:
         # 每轮重新裁剪:循环里刚追加的工具消息必须出现在下一次请求里.
@@ -89,25 +102,26 @@ def run_agent(messages):
                 system = messages[0]
                 view = [{"role": "system", "content": system["content"] + "\n\n" + note}] + view[1:]
 
-        response = chat_client.chat.completions.create(
+        response = await chat_client.chat.completions.create(
             model=CHAT_MODEL,
             messages=view,
             # 预算用完后传 None, SDK 会把这个字段整个省掉, 模型就调不了工具了.
             tools=TOOLS if tools_enabled else None,
             stream=False,
         )
+        prompt_tokens += response.usage.prompt_tokens
         message = response.choices[0].message
 
         # 先写回历史:下一轮模型要靠它看见自己上一轮说过什么, 点过哪些工具.
         messages.append(message)
 
         if not message.tool_calls:
-            return message.content
+            return AgentResult(message.content, tool_calls_used, prompt_tokens)
 
         for tool_call in message.tool_calls:
             if tool_calls_used < MAX_TOOL_CALLS:
                 tool_calls_used += 1
-                content = _execute(tool_call)
+                content = await asyncio.to_thread(_execute, tool_call)
             else:
                 tools_enabled = False
                 content = _BUDGET_EXCEEDED
@@ -121,9 +135,7 @@ def run_agent(messages):
             )
 
 
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-
+async def _cli():
     history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     while True:
@@ -132,4 +144,10 @@ if __name__ == '__main__':
             break
 
         history.append({"role": "user", "content": question})
-        print("客服:", run_agent(history))
+        result = await run_agent(history)
+        print("客服:", result.reply)
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(_cli())
