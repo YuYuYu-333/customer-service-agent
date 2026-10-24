@@ -10,6 +10,7 @@ import logging
 
 from app.llm import CHAT_MODEL, chat_client
 from app.tools import FUNCTIONS, TOOLS
+from app.memory import pinned_questions, trim
 
 # 单次用户提问允许的工具调用总次数
 # 实测4次足够覆盖"查订单+算差价"这类组合,
@@ -76,16 +77,28 @@ def run_agent(messages):
     tools_enabled = True
 
     while True:
+        # 每轮重新裁剪:循环里刚追加的工具消息必须出现在下一次请求里.
+        # messages 本身始终完整,所以 pinned 永远取得到最早的提问.
+        view = trim(messages)
+
+        # 只有真的裁过才注入,否则正常对话会被"你看不全"这类提示污染.
+        if len(view) < len(messages):
+            logger.info("触发裁剪: %d 条 -> %d 条", len(messages), len(view))
+            note = pinned_questions(messages)
+            if note:
+                system = messages[0]
+                view = [{"role": "system", "content": system["content"] + "\n\n" + note}] + view[1:]
+
         response = chat_client.chat.completions.create(
             model=CHAT_MODEL,
-            messages=messages,
-            # 预算用完后传 None, SDK 会把这个字段整个省掉,模型就调不了工具了.
+            messages=view,
+            # 预算用完后传 None, SDK 会把这个字段整个省掉, 模型就调不了工具了.
             tools=TOOLS if tools_enabled else None,
             stream=False,
         )
         message = response.choices[0].message
 
-        # 先写回历史:下一轮模型要靠它看见自己上一轮说过什么,点过哪些工具.
+        # 先写回历史:下一轮模型要靠它看见自己上一轮说过什么, 点过哪些工具.
         messages.append(message)
 
         if not message.tool_calls:
