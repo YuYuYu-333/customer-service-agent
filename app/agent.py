@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是电商平台的客服助手.
 规则:
-1. 订单、物流、金额这类信息只能来自工具返回结果,不要凭印象编造。
+1. 订单、物流、金额、政策条款等事实性内容,只能来自工具返回结果,不要凭印象编造。如果工具返回的材料里没有相关内容,就如实说没有,不要用常识补充。
 2. 工具返回 error 时,如实告诉用户查不到,并请用户确认信息,不要自己猜。
 3. 回答简洁,先给结论再给依据。
 4. 用户的问题超出客服范围时,礼貌说明无法处理。"""
@@ -38,6 +38,7 @@ def _execute(tool_call):
     执行一个工具调用,任何异常都转成结构化错误交给模型.
     """
     name = tool_call.function.name
+    logger.info("调用工具 %s,参数: %s", name, tool_call.function.arguments)
 
     try:
         args = json.loads(tool_call.function.arguments or "{}")

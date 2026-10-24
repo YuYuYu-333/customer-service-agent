@@ -7,6 +7,8 @@
 import json
 from pathlib import Path
 
+from app.rag import search
+
 # 模块级缓存: 进程存活期间只读一次盘
 # 一次客服对话会多次调用工具,每次重读文件都产生磁盘IO
 # 注意多进程部署时各个进程各有一份,不是全局共享
@@ -67,6 +69,16 @@ def calculate_discount(original_price, current_price):
     }
 
 
+def search_policy(query):
+    """
+    在退换货政策文档里检索与问题最相关的段落
+    :param query: 用户的问题原文
+    :return: 用分割线拼接的若干段政策原文
+    """
+    results = search(query)
+    return "\n\n---\n\n".join(text for _, text in results)
+
+
 TOOLS = [
     {
         "type": "function",
@@ -120,11 +132,40 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_policy",
+            "description": (
+                "检索退换货政策文档,返回与问题最相关的政策原文段落."
+                "当用户询问退货条件、退换货规则、运费承担、退款时效、某类商品能否退换等政策类问题时使用."
+                "查询具体订单的状态、物流、金额时不要用本工具,改用get_order_status."
+                "检索结果可能不完全相关,如果返回内容没有回答用户的问题,如实告知用户没有找到相关规定,不要编造政策."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "检索语句.要包含问题涉及的商品品类,"
+                            "例如蓝牙耳机、生鲜、定制商品、虚拟商品,"
+                            "因为政策文档按品类分节,不带品类只会检索到通用条款."
+                            "如果已经通过其他工具知道了商品名称,把它加进语句里,"
+                            "例如传\"蓝牙耳机激活后能退吗\",不要传\"这个订单能退吗\"."
+                        )
+                    }
+                },
+                "required": ["query"],
+            }
+        }
+    },
 ]
 
 FUNCTIONS = {
     "get_order_status": get_order_status,
     "calculate_discount": calculate_discount,
+    "search_policy": search_policy,
 }
 
 if __name__ == '__main__':
