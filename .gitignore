@@ -6,6 +6,7 @@ index.json
 *.pyc
 __pycache__/
 .pytest_cache/
+eval/raw.json
 
 # 虚拟环境
 .venv/
@@ -18,3 +19,4 @@ venv/
 # 系统文件
 .DS_Store
 Thumbs.db
+
