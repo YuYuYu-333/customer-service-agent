@@ -8,6 +8,7 @@ Agent 主循环
 import asyncio
 import json
 import logging
+from types import SimpleNamespace
 from typing import NamedTuple
 
 from app.llm import CHAT_MODEL, chat_client
@@ -96,6 +97,103 @@ async def _run_tool(tool_call):
     except asyncio.TimeoutError:
         logger.warning("工具 %s 超时", tool_call.function.name)
         return _TOOL_TIMEOUT
+
+
+def _call_obj(slot):
+    """把积累好的工具调用字典包成 _execute 认识的属性对象."""
+    return SimpleNamespace(
+        id=slot["id"],
+        function=SimpleNamespace(name=slot["name"], arguments=slot["arguments"]),
+    )
+
+
+async def run_agent_stream(messages):
+    """
+    流式版 Agent 循环,逐条 yield 事件字典.
+    事件类型: tool / delta / done
+    """
+    tool_calls_used = 0
+    tools_enabled = True
+    prompt_tokens = 0
+
+    while True:
+        view = trim(messages)
+
+        if len(view) < len(messages):
+            note = pinned_questions(messages)
+            if note:
+                system = messages[0]
+                view = [{"role": "system", "content": system["content"] + "\n\n" + note}] + view[1:]
+
+        stream = await chat_client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=view,
+            tools=TOOLS if tools_enabled else None,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        content = []
+        slots = {}
+        finish_reason = None
+
+        async for chunk in stream:
+            if chunk.usage:
+                prompt_tokens += chunk.usage.prompt_tokens
+            if not chunk.choices:
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            if delta.content:
+                content.append(delta.content)
+                yield {"type": "delta", "text": delta.content}
+            for piece in delta.tool_calls or []:
+                slot = slots.setdefault(piece.index, {"id": "", "name": "", "arguments": ""})
+                if piece.id:
+                    slot["id"] = piece.id
+                if piece.function and piece.function.name:
+                    slot["name"] += piece.function.name
+                if piece.function and piece.function.arguments:
+                    slot["arguments"] += piece.function.arguments
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+        if not slots:
+            messages.append({"role": "assistant", "content": "".join(content)})
+            yield {"type": "done", "token": prompt_tokens, "tool": tool_calls_used}
+            return
+
+        calls = [_call_obj(slots[i]) for i in sorted(slots)]
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "".join(content) or None,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments,
+                        },
+                    }
+                    for call in calls
+                ],
+            }
+        )
+
+        for call in calls:
+            yield {"type": "tool", "name": call.function.name}
+            if tool_calls_used < MAX_TOOL_CALLS:
+                tool_calls_used += 1
+                result = await _run_tool(call)
+            else:
+                tools_enabled = False
+                result = _BUDGET_EXCEEDED
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
 
 async def run_agent(messages):

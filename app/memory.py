@@ -23,6 +23,14 @@ def _text_of(message):
     return message.content or ""
 
 
+def _call_parts(call):
+    """工具调用的名字和参数.可能是 SDK 对象,也可能是手工拼的字典."""
+    if isinstance(call, dict):
+        function = call.get("function") or {}
+        return function.get("name") or "", function.get("arguments") or ""
+    return call.function.name, call.function.arguments or ""
+
+
 def count_tokens(messages):
     """
     估算一组消息占多少 token.
@@ -42,8 +50,9 @@ def count_tokens(messages):
             else message.tool_calls
         )
         for call in tool_calls or []:
-            total += len(_ENC.encode(call.function.name))
-            total += len(_ENC.encode(call.function.arguments or ""))
+            name, arguments = _call_parts(call)
+            total += len(_ENC.encode(name))
+            total += len(_ENC.encode(arguments))
 
     return total
 

@@ -94,3 +94,19 @@ def test_chat_returns_500_when_agent_fails(monkeypatch):
     response = client.post("/chat", json={"message": "随便问问"})
 
     assert response.status_code == 500
+
+
+def test_chat_stream_emits_events(monkeypatch):
+    async def fake_stream(messages):
+        yield {"type": "delta", "text": "你"}
+        yield {"type": "delta", "text": "好"}
+        yield {"type": "done", "token": 10, "tool": 0}
+
+    monkeypatch.setattr(api, "run_agent_stream", fake_stream)
+
+    with client.stream("POST", "/chat/stream", json={"message": "hi"}) as resp:
+        assert resp.status_code == 200
+        body = "".join(resp.iter_text())
+
+    assert '"text": "你"' in body
+    assert "[DONE]" in body
