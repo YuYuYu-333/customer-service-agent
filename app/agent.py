@@ -36,6 +36,10 @@ _BUDGET_EXCEEDED = json.dumps(
     {"error": "本次对话的工具调用次数已达上限,请基于已有信息直接回答用户"},
     ensure_ascii=False,
 )
+_TOOL_TIMEOUT = json.dumps(
+    {"error": "工具执行超时,请告知用户稍后重试,不要猜测结果"},
+    ensure_ascii=False,
+)
 
 
 class AgentResult(NamedTuple):
@@ -77,6 +81,21 @@ def _execute(tool_call):
             ensure_ascii=False,
         )
     return json.dumps(result, ensure_ascii=False)
+
+
+TOOL_TIMEOUT = 8
+
+
+async def _run_tool(tool_call):
+    """执行工具并施加超时,超时转成结构化错误交给模型."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_execute, tool_call),
+            timeout=TOOL_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("工具 %s 超时", tool_call.function.name)
+        return _TOOL_TIMEOUT
 
 
 async def run_agent(messages):
@@ -121,7 +140,7 @@ async def run_agent(messages):
         for tool_call in message.tool_calls:
             if tool_calls_used < MAX_TOOL_CALLS:
                 tool_calls_used += 1
-                content = await asyncio.to_thread(_execute, tool_call)
+                content = await _run_tool(tool_call)
             else:
                 tools_enabled = False
                 content = _BUDGET_EXCEEDED

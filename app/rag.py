@@ -98,9 +98,11 @@ def search(query, k=TOP_K):
     :param k:返回块数
     :return: [(相似度, 文本块), ...],按相似度从高到低
     """
-    query_vec = embed(query)
+    # 先确认索引可用,否则白白花一次向量化调用
+    index = get_index()
 
-    scored = [(cos(query_vec, item["vec"]), item["text"]) for item in get_index()]
+    query_vec = embed(query)
+    scored = [(cos(query_vec, item["vec"]), item["text"]) for item in index]
     scored.sort(reverse=True)
 
     return scored[:k]

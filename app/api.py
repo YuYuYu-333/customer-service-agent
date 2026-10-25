@@ -7,18 +7,32 @@ HTTP 接口层.
 
 import logging
 import time
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agent import SYSTEM_PROMPT, run_agent
+from app.rag import get_index
 from app.tools import get_order_status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="智能客服 Agent")
+
+@asynccontextmanager
+async def lifespan(app):
+    """启动时检查索引:缺失就告警,存在就预热缓存"""
+    try:
+        get_index()
+        logger.info("政策索引加载完成")
+    except RuntimeError as exc:
+        logger.warning("政策检索不可用: %s", exc)
+    yield
+
+
+app = FastAPI(title="智能客服 Agent", lifespan=lifespan)
 
 # 会话存在进程内存里.多 worker 部署时每个进程一份,会话会串;进程重启即丢失.
 # 生产环境应换成 Redis,理由:跨进程共享、可持久化、支持 TTL 自动回收.
