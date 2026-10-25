@@ -17,6 +17,7 @@ client = TestClient(api.app)
 def clear_sessions():
     """每个测试前清空会话字典,避免测试之间互相污染."""
     api._sessions.clear()
+    api._locks.clear()
     yield
 
 

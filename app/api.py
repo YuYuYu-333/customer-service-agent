@@ -5,6 +5,7 @@ HTTP 接口层.
 不负责对话逻辑,也不负责上下文裁剪.
 """
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -37,6 +38,15 @@ app = FastAPI(title="智能客服 Agent", lifespan=lifespan)
 # 会话存在进程内存里.多 worker 部署时每个进程一份,会话会串;进程重启即丢失.
 # 生产环境应换成 Redis,理由:跨进程共享、可持久化、支持 TTL 自动回收.
 _sessions: dict[str, list[dict]] = {}
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(session_id):
+    lock = _locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[session_id] = lock
+    return lock
 
 
 class ChatRequest(BaseModel):
@@ -77,24 +87,26 @@ async def read_order(order_id: str):
 async def chat(req: ChatRequest):
     session_id = req.session_id or uuid4().hex
 
-    history = _sessions.get(session_id)
-    if history is None:
-        history = [{"role": "system", "content": SYSTEM_PROMPT}]
-        _sessions[session_id] = history
+    # 同一会话的两个协程共用同一个 history,
+    # 在 await 处交替执行会把消息写乱.
+    async with _lock_for(session_id):
+        history = _sessions.get(session_id)
+        if history is None:
+            history = [{"role": "system", "content": SYSTEM_PROMPT}]
+            _sessions[session_id] = history
 
-    # 记下长度,失败时按这个位置回滚.
-    before = len(history)
-    history.append({"role": "user", "content": req.message})
+        before = len(history)
+        history.append({"role": "user", "content": req.message})
 
-    started = time.perf_counter()
-    try:
-        result = await run_agent(history)
-    except Exception:
-        logger.exception("会话 %s 处理失败", session_id)
-        del history[before:]
-        raise HTTPException(status_code=500, detail="服务器暂时不可用,请稍后重试")
+        started = time.perf_counter()
+        try:
+            result = await run_agent(history)
+        except Exception:
+            logger.exception("会话 %s 处理失败", session_id)
+            del history[before:]
+            raise HTTPException(status_code=500, detail="服务器暂时不可用,请稍后重试")
 
-    latency_ms = int((time.perf_counter() - started) * 1000)
+        latency_ms = int((time.perf_counter() - started) * 1000)
 
     return ChatResponse(
         reply=result.reply,
