@@ -5,6 +5,7 @@
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from app.rag import search
@@ -41,7 +42,25 @@ def get_order_status(order_id):
         if order["order_id"] == order_id:
             return order
 
-    return {"error": f"未找到订单号 {order_id} 请向用户确认订单号是否正确,不用编造订单信息"}
+    return {"error": f"未找到订单号 {order_id} ,请向用户确认订单号是否正确,不用编造订单信息"}
+
+
+def days_since_order(order_id):
+    """
+    从下单日期到今天隔了几个自然日.不是"签收至今" —— 订单数据里没有签收时间,只有下单时间.
+    :param order_id:订单号
+    :return:dict,含order_id / created_at / days;订单不存在时返回 {"error": ...}
+    """
+    order = get_order_status(order_id)
+    if "error" in order:
+        return order
+
+    created = datetime.strptime(order["created_at"], "%Y-%m-%d %H:%M")
+    return {
+        "order_id": order_id,
+        "created_at": order["created_at"],
+        "days": (datetime.now().date() - created.date()).days,
+    }
 
 
 def calculate_discount(original_price, current_price):
@@ -161,12 +180,35 @@ TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "days_since_order",
+            "description": (
+                "计算从下单日期到今天隔了几个自然日,返回订单号,下单时间和天数."
+                "当用户问'我下的单过了几天了''还在七天无理由期限内吗'这类需要算天数的问题时使用."
+                "注意:返回的天数是从下单日算起,不是从签收日算起."
+                "调用前必须确认用户提供了订单号,没有就先向用户询问,不要猜测."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "订单号,纯数字字符串,如10001"
+                    }
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
 ]
 
 FUNCTIONS = {
     "get_order_status": get_order_status,
     "calculate_discount": calculate_discount,
     "search_policy": search_policy,
+    "days_since_order": days_since_order,
 }
 
 if __name__ == '__main__':

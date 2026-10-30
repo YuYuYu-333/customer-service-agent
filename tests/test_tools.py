@@ -3,9 +3,13 @@
 全部是纯函数,不调用 API,毫秒级跑完.
 search_policy 需要真实的 embedding调用,不放这里,由评估集覆盖.
 """
-from unittest import result
-
-from app.tools import FUNCTIONS, TOOLS, calculate_discount, get_order_status
+from app.tools import (
+    FUNCTIONS,
+    TOOLS,
+    calculate_discount,
+    days_since_order,
+    get_order_status,
+)
 
 
 def test_get_order_status_returns_order():
@@ -53,3 +57,17 @@ def test_tools_and_functions_stay_in_sync():
     """
     declared = {item["function"]["name"] for item in TOOLS}
     assert set(FUNCTIONS) == declared
+
+
+def test_days_since_order_returns_days():
+    """返回的 days 应该是整数,且能正确解析 orders.json 里的时间格式"""
+    result = days_since_order("10001")
+    assert result["order_id"] == "10001"
+    assert isinstance(result["days"], int)
+    assert result["days"] >= 0
+
+
+def test_days_since_order_handles_missing_order():
+    """订单不存在时,和 get_order_status 一样返回 error,而不是抛异常"""
+    result = days_since_order("99999")
+    assert "error" in result
