@@ -11,6 +11,8 @@
 - **可评估**：20 题端到端评测 + 11 题检索分层评测
 - **故障兜底**：9 个故障场景有明确定义的行为，其中 5 个有自动测试
 
+![接口文档](docs/screenshots/api-docs.png)
+
 **技术栈**：Python 3.13 · FastAPI · asyncio · SSE · DeepSeek · Function Calling · bge-m3 · pytest
 
 ## 架构
@@ -245,6 +247,10 @@ pytest
 ### POST /chat/stream
 
 返回 `text/event-stream`，每条消息为一行 `data: <json>`，以两个换行结束；最后一条固定是 `data: [DONE]`。
+
+![流式输出](docs/screenshots/streaming.png)
+
+上面的截图里，`tool` 事件（`search_policy`）先于正文出现，正文随后逐段打印。
 
 ```text
 data: {"type": "session", "session_id": "3f9c8a..."}
