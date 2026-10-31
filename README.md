@@ -9,8 +9,9 @@
 - **流式输出**：SSE，工具事件先于正文下发，客户端能立刻显示"正在查询订单"
 - **上下文管理**：4000 token 预算，超限裁剪，最早的提问始终保留
 - **可评估**：20 题端到端评测 + 11 题检索分层评测
-- **故障兜底**：12 个故障场景有明确定义的行为，其中 5 个有自动测试
+- **故障兜底**：15 个故障场景有明确定义的行为，其中 8 个有自动测试
 - **会话外置**：Redis 存会话（30 分钟滑动过期）+ Redis 会话锁，两个 worker 并发同一会话不丢消息
+- **资源保护**：按来源 IP 限流 10 次/分钟 → 429；每日 token 配额 100 万 → 503
 
 ![接口文档](docs/screenshots/api-docs.png)
 
@@ -25,7 +26,8 @@
 | HTTP 层 | `app/api.py` | 路由、SSE 封装。**全项目唯一知道 HTTP 存在的文件** |
 | 循环层 | `app/agent.py` | Agent 主循环：调模型 → 收集工具调用 → 执行 → 结果写回历史 |
 | 能力层 | `app/tools.py` / `app/rag.py` / `app/memory.py` | 工具实现 / 向量检索 / token 计量与裁剪 |
-| 存储层 | `app/session_store.py` | 会话读写接口、Memory/Redis 两个实现、会话锁 |
+| 存储层 | `app/session_store.py` | 会话读写接口、Memory/Redis 两个实现、会话锁、计数器原语 |
+| 策略层 | `app/limits.py` | 限流与配额的阈值和规则，只调用存储层的计数器 |
 | 基础层 | `app/llm.py` / `app/config.py` | 两个 API client / 环境变量读取与启动校验 |
 
 依赖方向单向向下，没有任何一层反向依赖上层：
@@ -82,7 +84,8 @@ customer-service-agent/
 │   ├── memory.py            token 计量、历史裁剪、最早问题钉回
 │   ├── llm.py               chat_client / embed_client
 │   ├── config.py            环境变量读取 + import 期校验
-│   ├── session_store.py     会话读写接口 + Memory/Redis 实现 + 会话锁
+│   ├── session_store.py     会话读写接口 + Memory/Redis 实现 + 会话锁 + 计数器
+│   ├── limits.py            限流与配额策略（阈值从 config 读）
 │   ├── text.py              政策文档切块
 │   ├── bm25.py              对照实验：字级 bigram BM25（未接入主链路）
 │   ├── hybrid.py            对照实验：RRF 融合（未接入主链路）
@@ -100,7 +103,7 @@ customer-service-agent/
 │   ├── build_index.py       建 index.json
 │   ├── try_stream.py        命令行试流式（不走 HTTP）
 │   └── try_stream_http.py   走真实 HTTP + 测 TTFT
-├── tests/                   24 个测试
+├── tests/                   28 个测试
 ├── requirements.txt         直接依赖（手工整理）
 └── requirements-dev.txt     + pytest
 ```
@@ -160,6 +163,16 @@ async with store.lock(session_id):
 
 **代价**：仓库里多了三个不进主链路的文件。留着的理由是让那张对照表可以被他人复现 —— 删掉它，结论就变成了一句无法验证的话。
 
+### 7. 限流的计数器也放 Redis，但策略单独一层
+
+计数必须跨进程一致，理由和会话锁完全相同：两个 worker 各数各的，等于没限流。所以计数器也走 `store.incr`。
+
+**但策略不放进存储层。**`app/limits.py` 只决定 key 怎么拼、阈值多少、超了抛什么异常；`session_store.py` 只提供「加一」和「读一个数」两个原语。这样改阈值、把按 IP 改成按用户，都不用碰存储实现。
+
+**之所以要 Lua 而不是两条命令**：`INCR` 和 `EXPIRE` 分开写，进程如果在中间被杀掉，键建出来了但永远不过期——**那个 IP 被永久限流**。Lua 在 Redis 里整体执行，不会只做一半。
+
+**代价**：固定窗口，不是滑动窗口。第 59 秒打满 10 次、第 61 秒再打 10 次，**这 2 秒内实际放行 20 次**。换滑动窗口要用 `ZSET` 存每次请求的时间戳，存储和复杂度都上一个台阶，这里的边界泄漏不值得那个代价。
+
 ## 快速开始
 
 > 需要 Python **3.10 或更高**（代码里用了 `str | None` 这类语法）。本项目在 **3.13.15** 上开发并验证。
@@ -191,6 +204,8 @@ Copy-Item .env.example .env
 | `DEEPSEEK_API_KEY` | 对话与工具调用 | 是 |
 | `SILICONFLOW_API_KEY` | 文本向量化（建索引与检索） | 是 |
 | `REDIS_URL` | 会话存储；不填则退回进程内存 | 否 |
+| `RATE_LIMIT_PER_MINUTE` | 每 IP 每分钟请求上限，默认 10 | 否 |
+| `DAILY_TOKEN_LIMIT` | 每日 prompt token 上限，默认 1000000 | 否 |
 
 `.env` 已在 `.gitignore` 中，不会被提交。密钥缺失时 `app/config.py` 在 **import 阶段**就抛 `RuntimeError`，不会等到第一个请求才收到 401。
 
@@ -249,13 +264,13 @@ uvicorn app.api:app --workers 2
 pytest
 ```
 
-24 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
+28 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
 
 ### 部署说明
 
 `requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出 —— 后者会把环境里所有传递依赖和无关包一起带上，换台机器装完仍然不知道哪些是真的需要的。
 
-完整性验证方式：建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，24 个测试全部通过。
+完整性验证方式：建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，28 个测试全部通过。
 
 **容器化未验证。** 尝试过 Docker Desktop + WSL2 后端，但宿主 Windows 的 `VirtualMachinePlatform` 组件每次启用后重启即被系统回滚（三次尝试，含 `DISM /RestoreHealth`），镜像未能在本地构建成功。因此本仓库不附带未经构建验证的 Dockerfile —— 一个写出来但跑不起来的 Dockerfile 比没有更糟。
 
@@ -265,7 +280,8 @@ pytest
 |---|---|---|
 | POST | `/chat` | 同步对话，返回完整回复 |
 | POST | `/chat/stream` | 流式对话，SSE |
-| GET | `/health` | 存活探测，不检查依赖 |
+| GET | `/health` | 存活探测，**不检查依赖** |
+| GET | `/ready` | 就绪探测，查索引与存储，依赖不可用时返回 503 |
 | GET | `/orders/{order_id}` | 直接查订单，不经过模型 |
 
 ### POST /chat
@@ -293,7 +309,16 @@ pytest
 
 **并发语义**：同一个 `session_id` 的请求串行执行，不同 `session_id` 之间并行。原因是同一会话的两段历史是同一个列表，在 `await` 处交错写入会串消息。
 
-**这个串行在多个 worker 之间同样成立**——锁在 Redis 里，不在进程内存里。抢不到锁最多等 30 秒，超时抛 `TimeoutError`（当前表现为 500，见「已知局限」）。
+**这个串行在多个 worker 之间同样成立**——锁在 Redis 里，不在进程内存里。抢不到锁最多等 30 秒，超时抛 `SessionBusy`，返回 503。
+
+**状态码：**
+
+| 码 | 什么时候出现 |
+|---|---|
+| `200` | 正常返回 |
+| `429` | 该来源 IP 超过每分钟请求上限 |
+| `503` | 今日 token 配额用完，或同一会话的上一条还在处理中 |
+| `500` | 模型调用异常或存储不可用 |
 
 ### POST /chat/stream
 
@@ -443,7 +468,10 @@ easy 集四种方法全部 `5/5 / MRR 1.000` —— **说明这套 easy 题太�
 | 跨会话并发 | 并行执行，互不阻塞 | `test_different_sessions_run_in_parallel` |
 | 未配置 `REDIS_URL` | 退回 `MemoryStore`，启动日志打 WARNING。单进程正常，多 worker 会串 | 手工：清空 `REDIS_URL` 后看启动日志 |
 | Redis 连不上 | 会话读写直接抛异常 → 500。**不可恢复**，最常见原因是 `redis-server.exe` 没启动 | 手工：停掉 Redis 后请求 `/chat` |
-| 抢锁超时（30 秒） | 抛 `TimeoutError` → 500。说明同一会话的上一条还在处理中 | 手工（无自动测试） |
+| 抢锁超时（30 秒） | 抛 `SessionBusy` → **503**。说明同一会话的上一条还在处理中 | `test_chat_returns_503_when_session_busy` |
+| 请求超过限流阈值 | 前 N 次放行，超出返回 **429**。被拒的请求**也计数**，否则刷接口的人只要一直失败就永远解不了封 | `test_rate_limit_returns_429` |
+| 每日 token 配额用完 | 返回 **503**，提示明天再试。**扣费只发生在成功的轮次**，429 和被拒的请求不扣 | `test_quota_exceeded_returns_503`、`test_tokens_are_charged_after_success` |
+| `/ready` 报告依赖不可用 | 返回 **503** 并在 `checks` 里指出是哪一项（`index` / `store`）。**进程本身存活，`/health` 仍是 200** | 手工：把 `REDIS_URL` 指向一个没人监听的端口后启动 |
 
 **这些测试做过变异验证**：把 `assert peak == 1` 改成 `assert 1 == 2`，确认测试会失败 —— 否则无法排除「测试恒为真」这种看起来通过、实际什么都没验证的情况。
 
@@ -459,9 +487,11 @@ easy 集四种方法全部 `5/5 / MRR 1.000` —— **说明这套 easy 题太�
 |---|---|---|
 | 工具错误里带内部指令 | 索引缺失时 `RuntimeError` 的原文「请先运行 `python -m scripts.build_index`」会作为工具错误交给模型 | 给模型的错误只写用户可读的原因，内部指令进日志 |
 | 「请稍后重试」用于不可恢复的错误 | 索引缺失时重试一万次也不会好，这句话会误导用户 | 按错误类型分措辞：可重试 / 需要人工介入 |
-| `/health` 探测不到依赖故障 | 索引缺失、密钥失效时它仍然返回 `ok` | 增加 `/ready`，检查 `index.json` 可读并做一次模型探活 |
+| `/ready` **不**检查模型 API | 密钥失效时 `/ready` 仍返回 200 | **这是有意的**：探活是周期性的，每次调模型既烧钱又会让所有实例一起被判不健康。密钥失效靠 500 率和告警发现 |
 | `MAX_CONTEXT_TOKENS` 是软限制 | 硬顶 4000，但 `trim` 不会切掉当前问题，实际可能到 ~5100，再加上 ~800 的 tools 定义 | 预算里显式计入 tools 开销；超限时告警而不是静默截断 |
-| 抢锁超时返回 500 而不是 503 | 客户端分不清「服务器坏了」和「你的上一条还在处理中」 | 捕获 `TimeoutError`，返回 503 + `Retry-After` |
+| 限流按来源 IP，代理后失效 | 部署在反向代理后面时 `request.client.host` 拿到的是代理地址，所有用户共用一个计数器 | 读 `X-Forwarded-For`，并且只信任已知的代理 |
+| 固定窗口有边界效应 | 窗口交界处 2 秒内可能放行 2 倍请求 | 换滑动窗口（`ZSET` 存时间戳），代价是存储和复杂度上升 |
+| `session_id` 没有鉴权 | 任何人拿到别人的 `session_id` 就能读、能续上那段对话 | 需要用户体系：服务端签发并绑定，或者加签名校验 |
 | Redis 不可用时整站不可用 | 会话读写是每个请求的必经路径，没有本地兜底 | 加降级开关：Redis 异常时临时退回进程内存，牺牲一致性换可用性 |
 | 锁的 TTL 可能提前失效 | 单次处理超过 120 秒时锁自动释放，互斥失效 | 后台续期（watchdog），或让 TTL 远大于最长处理时间 |
 | `MemoryStore` 与 `RedisStore` 有一处行为差异 | 内存版不会过期，Redis 版 30 分钟自动回收，两者不完全等价 | 内存版加惰性过期；或者明说它只用于开发和测试 |
