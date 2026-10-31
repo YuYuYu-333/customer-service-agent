@@ -2,5 +2,6 @@ fastapi==0.143.3
 httpx==0.28.1
 openai==3.19.2
 python-dotenv==1.2.4
+redis==8.1.0
 tiktoken==0.14.0
 uvicorn==0.54.0

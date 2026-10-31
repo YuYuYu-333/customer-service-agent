@@ -6,7 +6,6 @@ HTTP 接口层.
 """
 
 import json
-import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -17,7 +16,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agent import SYSTEM_PROMPT, run_agent, run_agent_stream
+from app.config import REDIS_URL
 from app.rag import get_index
+from app.session_store import SessionStore, build_store
 from app.tools import get_order_status
 
 logging.basicConfig(level=logging.INFO)
@@ -32,23 +33,19 @@ async def lifespan(app):
         logger.info("政策索引加载完成")
     except RuntimeError as exc:
         logger.warning("政策检索不可用: %s", exc)
+
+    if REDIS_URL:
+        logger.info("会话存储:Redis")
+    else:
+        logger.warning("会话存储:进程内存(未配置REDIS_URL,多 worker 会串会丢)")
     yield
 
 
-app = FastAPI(title="智能客服 Agent", lifespan=lifespan)
+app = FastAPI(title="智能电商客服 Agent", lifespan=lifespan)
 
-# 会话存在进程内存里.多 worker 部署时每个进程一份,会话会串;进程重启即丢失.
-# 生产环境应换成 Redis,理由:跨进程共享、可持久化、支持 TTL 自动回收.
-_sessions: dict[str, list[dict]] = {}
-_locks: dict[str, asyncio.Lock] = {}
-
-
-def _lock_for(session_id):
-    lock = _locks.get(session_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _locks[session_id] = lock
-    return lock
+# 会话存在哪由 store 决定;api 层只认接口,不关心是内存还是 Redis.
+# 会话锁也归 store:锁的作用域必须和数据一致,否则多 worker 时锁形同虚设.
+store: SessionStore = build_store()
 
 
 class ChatRequest(BaseModel):
@@ -91,13 +88,11 @@ async def chat(req: ChatRequest):
 
     # 同一会话的两个协程共用同一个 history,
     # 在 await 处交替执行会把消息写乱.
-    async with _lock_for(session_id):
-        history = _sessions.get(session_id)
+    async with store.lock(session_id):
+        history = await store.load(session_id)
         if history is None:
             history = [{"role": "system", "content": SYSTEM_PROMPT}]
-            _sessions[session_id] = history
 
-        before = len(history)
         history.append({"role": "user", "content": req.message})
 
         started = time.perf_counter()
@@ -105,10 +100,10 @@ async def chat(req: ChatRequest):
             result = await run_agent(history)
         except Exception:
             logger.exception("会话 %s 处理失败", session_id)
-            del history[before:]
             raise HTTPException(status_code=500, detail="服务器暂时不可用,请稍后重试")
 
         latency_ms = int((time.perf_counter() - started) * 1000)
+        await store.save(session_id, history)
 
     return ChatResponse(
         reply=result.reply,
@@ -131,13 +126,10 @@ async def chat_stream(req: ChatRequest):
     async def events():
         yield _sse({"type": "session", "session_id": session_id})
 
-        async with _lock_for(session_id):
-            history = _sessions.get(session_id)
+        async with store.lock(session_id):
+            history = await store.load(session_id)
             if history is None:
                 history = [{"role": "system", "content": SYSTEM_PROMPT}]
-                _sessions[session_id] = history
-
-            before = len(history)
             history.append({"role": "user", "content": req.message})
 
             try:
@@ -145,8 +137,9 @@ async def chat_stream(req: ChatRequest):
                     yield _sse(event)
             except Exception:
                 logger.exception("会话 %s 流式处理失败", session_id)
-                del history[before:]
                 yield _sse({"type": "error", "message": "服务器暂时不可用,请稍后重试"})
+            else:
+                await store.save(session_id, history)
 
         yield "data: [DONE]\n\n"
 

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app import api
 from app.agent import AgentResult
+from app.session_store import MemoryStore
 
 client = TestClient(api.app)
 
@@ -17,7 +18,6 @@ client = TestClient(api.app)
 def clear_sessions():
     """每个测试前清空会话字典,避免测试之间互相污染."""
     api._sessions.clear()
-    api._locks.clear()
     yield
 
 
@@ -30,6 +30,13 @@ def fake_agent(monkeypatch):
 
     monkeypatch.setattr(api, "run_agent", _fake)
     return _fake
+
+
+@pytest.fixture(autouse=True)
+def clear_sessions():
+    """每个测试前换一个干净的存储,避免测试之间互相污染."""
+    api.store = MemoryStore()
+    yield
 
 
 def test_health():

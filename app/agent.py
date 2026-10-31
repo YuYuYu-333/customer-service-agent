@@ -230,7 +230,21 @@ async def run_agent(messages):
         message = response.choices[0].message
 
         # 先写回历史:下一轮模型要靠它看见自己上一轮说过什么, 点过哪些工具.
-        messages.append(message)
+        # 存纯字典,不存SDK 对象:会话要能序列化落盘(Redis),对象存不进去.
+        entry = {"role": "assistant", "content": message.content}
+        if message.tool_calls:
+            entry["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in message.tool_calls
+            ]
+        messages.append(entry)
 
         if not message.tool_calls:
             return AgentResult(message.content, tool_calls_used, prompt_tokens)

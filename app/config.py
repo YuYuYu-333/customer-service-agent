@@ -14,6 +14,8 @@ load_dotenv(_ENV_PATH)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
+# 可选:没配就退回进程内存.单机够用,多 worker 会串,所以启动时要告警.
+REDIS_URL = os.getenv("REDIS_URL")
 
 
 def _require(name, value):

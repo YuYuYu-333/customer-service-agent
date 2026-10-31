@@ -10,6 +10,7 @@ import pytest
 import app.agent as agent
 import app.api as api
 from app.agent import AgentResult
+from app.session_store import MemoryStore
 
 
 def _tool_call(name, arguments):
@@ -38,10 +39,8 @@ def test_tool_timeout_returns_error(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clean_sessions():
     api._sessions.clear()
-    api._locks.clear()
     yield
     api._sessions.clear()
-    api._locks.clear()
 
 
 def _spy_agent(monkeypatch):
@@ -83,3 +82,10 @@ def test_different_sessions_run_in_parallel(monkeypatch):
 
     asyncio.run(main())
     assert state["peak"] == 2
+
+
+@pytest.fixture(autouse=True)
+def _clean_sessions():
+    api.store = MemoryStore()
+    yield
+    api.store = MemoryStore()
