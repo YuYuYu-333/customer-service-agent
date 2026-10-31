@@ -1,5 +1,7 @@
 # 智能电商客服 Agent
 
+![tests](https://github.com/YuYuYu-333/customer-service-agent/actions/workflows/ci.yml/badge.svg)
+
 基于 RAG + Function Calling 的电商客服 Agent。模型在对话中自行决定调用哪个工具——查订单、算差价、算下单天数、检索售后政策——拿到结果后继续判断要不要再查，**直到它不再请求工具为止**。整条链路上的事实都来自工具返回，**不依赖模型自身的记忆**。
 
 支持流式输出：不调工具的对话首字 1.04s（全程 1.47s），调用了工具的对话首字 1.95s（全程 2.67s）。
@@ -175,7 +177,7 @@ async with store.lock(session_id):
 
 ## 快速开始
 
-> 需要 Python **3.10 或更高**（代码里用了 `str | None` 这类语法）。本项目在 **3.13.15** 上开发并验证。
+> 需要 Python **3.10 或更高**（代码里用了 `str | None` 这类语法）。本项目在 **3.13.15** 上开发并验证；CI 在 **Ubuntu + Python 3.13** 上跑同一套测试，所以代码本身不依赖 Windows——下面命令里的路径写法是 Windows 的，Linux/macOS 换成对应的即可。
 
 ### 1. 安装依赖
 
@@ -190,6 +192,8 @@ PowerShell 首次执行报 `禁止运行脚本` 时，先开一次当前会话�
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
+
+**Linux / macOS**：激活命令换成 `source .venv/bin/activate`，其余相同。Redis 用官方版即可，不需要 Windows 移植版。
 
 ### 2. 配置密钥
 
@@ -270,7 +274,7 @@ pytest
 
 `requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出 —— 后者会把环境里所有传递依赖和无关包一起带上，换台机器装完仍然不知道哪些是真的需要的。
 
-完整性验证方式：建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，28 个测试全部通过。
+完整性验证方式有两个：本地建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，28 个测试全部通过；以及 **GitHub Actions 每次推送都在干净的 Ubuntu 上重跑一遍**，结果见仓库首页的 `tests` 徽章。
 
 **容器化未验证。** 尝试过 Docker Desktop + WSL2 后端，但宿主 Windows 的 `VirtualMachinePlatform` 组件每次启用后重启即被系统回滚（三次尝试，含 `DISM /RestoreHealth`），镜像未能在本地构建成功。因此本仓库不附带未经构建验证的 Dockerfile —— 一个写出来但跑不起来的 Dockerfile 比没有更糟。
 
