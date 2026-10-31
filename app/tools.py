@@ -38,6 +38,7 @@ def get_order_status(order_id):
     :param order_id: 订单号字符串,如"10001"
     :return: 找到时返回该订单的字典;找不到时返回{"error":"..."},不抛异常
     """
+    order_id = str(order_id).strip()
     for order in load_orders():
         if order["order_id"] == order_id:
             return order
@@ -63,19 +64,27 @@ def days_since_order(order_id):
     }
 
 
-def calculate_discount(original_price, current_price):
+def calculate_discount(order_id):
     """
-    计算商品的原价与现价差额及折扣率
-    :param original_price: 原价,可能别模型传成str
-    :param current_price: 现价
-    :return: 含 saved 和 discount_percent 的字典;参数非法时返回{"error":"..."}
+    按订单号计算原价与实付价的差额及折扣率.
+    价格一律取自订单数据,不接受外部传入:模型传什么价就打什么折,等于把定价权交给自然语言.
+    :param order_id: 订单号
+    :return: 含 saved 和 discount_percent 的字典;订单不存在或价格缺失时返回 {"error":"..."}
     """
-    # 模型传参类型不可信,统一转成float
-    original_price = float(original_price)
-    current_price = float(current_price)
+    order = get_order_status(order_id)
+    if "error" in order:
+        return order
+
+    raw_original = order.get("original_price")
+    raw_current = order.get("price")
+    if raw_original is None or raw_current is None:
+        return {"error": "该订单缺少价格信息,请联系人工客服"}
+
+    original_price = float(raw_original)
+    current_price = float(raw_current)
 
     if original_price <= 0:
-        return {"error": "原价必须大于0,请向用户确认"}
+        return {"error": "订单原价异常,请联系人工客服"}
 
     saved = original_price - current_price
     discount_percent = saved / original_price * 100
@@ -126,28 +135,22 @@ TOOLS = [
         "function": {
             "name": "calculate_discount",
             "description": (
-                "根据订单的原价和现价来计算优惠金额和折扣率,返回原价,现价,差额和折扣率,均保留2位小数."
-                "当用户询问省了多少钱,差价多少,打了几折时使用."
-                "仅当用户明确提到价格或优惠时调用,只查询订单状态时不需要调用本工具."
-                "原价必须大于0,否则返回error,需向用户确认价格."
+                "根据订单号查询该订单的原价和实付金额,计算优惠金额和折扣率, 返回原价, 现价, 差额和折扣率, 均保留2位小数."
+                "当用户询问某笔订单省了多少钱,差价多少,打了几折时使用."
+                "价格只能来自订单数据:用户口头报的价格不作数, 必须以订单号查询结果为准, 不要自己心算折扣."
+                "调用前必须确认用户提供了订单号,没有就先向用户询问, 不要猜测."
+                "如果返回error,说明订单不存在或缺少价格信息, 需向用户确认订单号."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "original_price": {
-                        "type": "number",
-                        "description": (
-                            "商品的原价,单位元,如259"
-                        ),
-                    },
-                    "current_price": {
-                        "type": "number",
-                        "description": (
-                            "商品的当前售价,单位元,如199"
-                        ),
+                    "order_id": {
+                        "type": "string",
+                        "description":
+                            "订单号,纯数字字符串,如10001"
                     },
                 },
-                "required": ["original_price", "current_price"],
+                "required": ["order_id"],
             },
         },
     },
@@ -215,5 +218,5 @@ if __name__ == '__main__':
     print(get_order_status("10001"))
     print(get_order_status("10002"))
     print(get_order_status("99999"))
-    print(calculate_discount(259, 199))
-    print(calculate_discount("259", "199"))
+    print(calculate_discount("10001"))
+    print(calculate_discount("99999"))

@@ -3,6 +3,8 @@
 全部是纯函数,不调用 API,毫秒级跑完.
 search_policy 需要真实的 embedding调用,不放这里,由评估集覆盖.
 """
+
+import inspect
 from app.tools import (
     FUNCTIONS,
     TOOLS,
@@ -33,20 +35,23 @@ def test_get_order_status_returns_error_instead_of_raising():
 
 
 def test_calculate_discount():
-    result = calculate_discount(259, 199)
+    result = calculate_discount("10001")
 
     assert result["saved"] == 60.0
     assert result["discount_percent"] == 23.17
 
 
-def test_calculate_discount_accepts_string_input():
-    """模型传参类型不可信,字符串也要能算."""
-    assert calculate_discount("259", "199") == calculate_discount(259, 199)
+def test_calculate_discount_takes_only_order_id():
+    """
+    价格只能来自订单数据.
+    签名里不接受任何价格参数,模型就没有注入通道 ——防护靠接口设计,不靠模型听话.
+    """
+    params = list(inspect.signature(calculate_discount).parameters)
+    assert params == ["order_id"]
 
 
-def test_calculate_discount_rejects_non_positive_price():
-    assert "error" in calculate_discount(0, 100)
-    assert "error" in calculate_discount(-1, 100)
+def test_calculate_discount_returns_error_for_unknown_order():
+    assert "error" in calculate_discount("99999")
 
 
 def test_tools_and_functions_stay_in_sync():
