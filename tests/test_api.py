@@ -4,6 +4,9 @@ HTTP 接口层测试.
 run_agent 被替换成假的,测试只关心路由行为:状态码、会话隔离、异常兜底.
 """
 
+import asyncio
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -117,3 +120,40 @@ def test_chat_stream_emits_events(monkeypatch):
 
     assert '"text": "你"' in body
     assert "[DONE]" in body
+
+
+def test_chat_returns_503_when_session_busy(monkeypatch):
+    from app.session_store import SessionBusy
+
+    def _busy(session_id):
+        raise SessionBusy("occupied")
+
+    monkeypatch.setattr(api.store, "lock", _busy)
+
+    response = client.post("/chat", json={"message": "hi"})
+
+    assert response.status_code == 503
+
+
+def test_rate_limit_returns_429(fake_agent):
+    codes = [client.post("/chat", json={"message": "hi"}).status_code for _ in range(11)]
+
+    assert codes[:10] == [200] * 10
+    assert codes[10] == 429
+
+
+def test_quota_exceeded_returns_503(monkeypatch,
+                                    fake_agent):
+    monkeypatch.setattr("app.limits.DAILY_TOKEN_LIMIT", 0)
+
+    response = client.post("/chat", json={"message": "hi"})
+
+    assert response.status_code == 503
+
+
+def test_tokens_are_charged_after_success(fake_agent):
+    client.post("/chat", json={"message": "hi"})
+
+    used = asyncio.run(api.store.get_int(f"quota:{date.today().isoformat()}"))
+
+    assert used == 100

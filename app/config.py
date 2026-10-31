@@ -16,6 +16,9 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
 # 可选:没配就退回进程内存.单机够用,多 worker 会串,所以启动时要告警.
 REDIS_URL = os.getenv("REDIS_URL")
+# 可选:限流与配额阈值.不配就用默认值,本地开发不用管.
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE") or 10)
+DAILY_TOKEN_LIMIT = int(os.getenv("DAILY_TOKEN_LIMIT") or 1_000_000)
 
 
 def _require(name, value):

@@ -5,20 +5,22 @@ HTTP 接口层.
 不负责对话逻辑,也不负责上下文裁剪.
 """
 
+import asyncio
 import json
 import logging
 import time
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi.responses import StreamingResponse
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent import SYSTEM_PROMPT, run_agent, run_agent_stream
 from app.config import REDIS_URL
+from app.limits import QuotaExceeded, RateLimited, charge_tokens, check_quota, check_rate
 from app.rag import get_index
-from app.session_store import SessionStore, build_store
+from app.session_store import SessionBusy, SessionStore, build_store
 from app.tools import get_order_status
 
 logging.basicConfig(level=logging.INFO)
@@ -48,6 +50,18 @@ app = FastAPI(title="智能电商客服 Agent", lifespan=lifespan)
 store: SessionStore = build_store()
 
 
+async def _check_limits(request: Request) -> None:
+    """请求前置检查:限流 + 配额.超了直接抛 HTTPException."""
+    client_ip = request.client.host if request.client else "unknown"
+    try:
+        await check_rate(store, client_ip)
+        await check_quota(store)
+    except RateLimited:
+        raise HTTPException(status_code=429, detail="请求太频繁,请稍后再试")
+    except QuotaExceeded:
+        raise HTTPException(status_code=503, detail="今日额度已用完,请明天再试")
+
+
 class ChatRequest(BaseModel):
     message: str = Field(
         min_length=1,
@@ -73,6 +87,30 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/ready")
+async def ready():
+    """就绪探测:依赖不可用返回 503.进程不会被重启,只是不接流量."""
+    checks = {}
+
+    try:
+        get_index()
+        checks["index"] = "ok"
+    except RuntimeError:
+        checks["index"] = "missing"
+
+    try:
+        healthy = await asyncio.wait_for(store.ping(), timeout=1.0)
+        checks["store"] = "ok" if healthy else "unreachable"
+    except TimeoutError:
+        checks["store"] = "timeout"
+
+    ok = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={"status": "ready" if ok else "not_ready", "checks": checks},
+    )
+
+
 @app.get("/orders/{order_id}")
 async def read_order(order_id: str):
     """直接查订单,不经过模型.用来把"数据错"和"模型错"区分开"""
@@ -83,27 +121,32 @@ async def read_order(order_id: str):
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, _: None = Depends(_check_limits)):
     session_id = req.session_id or uuid4().hex
 
     # 同一会话的两个协程共用同一个 history,
     # 在 await 处交替执行会把消息写乱.
-    async with store.lock(session_id):
-        history = await store.load(session_id)
-        if history is None:
-            history = [{"role": "system", "content": SYSTEM_PROMPT}]
+    try:
+        async with store.lock(session_id):
+            history = await store.load(session_id)
+            if history is None:
+                history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        history.append({"role": "user", "content": req.message})
+            history.append({"role": "user", "content": req.message})
 
-        started = time.perf_counter()
-        try:
-            result = await run_agent(history)
-        except Exception:
-            logger.exception("会话 %s 处理失败", session_id)
-            raise HTTPException(status_code=500, detail="服务器暂时不可用,请稍后重试")
+            started = time.perf_counter()
+            try:
+                result = await run_agent(history)
+            except Exception:
+                logger.exception("会话 %s 处理失败", session_id)
+                raise HTTPException(status_code=500, detail="服务器暂时不可用,请稍后重试")
 
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        await store.save(session_id, history)
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            await store.save(session_id, history)
+    except SessionBusy:
+        raise HTTPException(status_code=503, detail="该会话正在处理上一条消息,请稍后重试")
+
+    await charge_tokens(store, result.prompt_tokens)
 
     return ChatResponse(
         reply=result.reply,
@@ -120,26 +163,33 @@ def _sse(payload):
 
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, _: None = Depends(_check_limits)):
     session_id = req.session_id or uuid4().hex
 
     async def events():
         yield _sse({"type": "session", "session_id": session_id})
 
-        async with store.lock(session_id):
-            history = await store.load(session_id)
-            if history is None:
-                history = [{"role": "system", "content": SYSTEM_PROMPT}]
-            history.append({"role": "user", "content": req.message})
+        used_tokens = 0
+        try:
+            async with store.lock(session_id):
+                history = await store.load(session_id)
+                if history is None:
+                    history = [{"role": "system", "content": SYSTEM_PROMPT}]
+                history.append({"role": "user", "content": req.message})
 
-            try:
-                async for event in run_agent_stream(history):
-                    yield _sse(event)
-            except Exception:
-                logger.exception("会话 %s 流式处理失败", session_id)
-                yield _sse({"type": "error", "message": "服务器暂时不可用,请稍后重试"})
-            else:
-                await store.save(session_id, history)
+                try:
+                    async for event in run_agent_stream(history):
+                        if event.get("type") == "done":
+                            used_tokens = event.get("token", 0)
+                        yield _sse(event)
+                except Exception:
+                    logger.exception("会话 %s 流式处理失败", session_id)
+                    yield _sse({"type": "error", "message": "服务器暂时不可用,请稍后重试"})
+                else:
+                    await store.save(session_id, history)
+                    await charge_tokens(store, used_tokens)
+        except SessionBusy:
+            yield _sse({"type": "error", "message": "该会话正在处理上一条消息,请稍后重试"})
 
         yield "data: [DONE]\n\n"
 
