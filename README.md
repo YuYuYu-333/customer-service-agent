@@ -9,11 +9,12 @@
 - **流式输出**：SSE，工具事件先于正文下发，客户端能立刻显示"正在查询订单"
 - **上下文管理**：4000 token 预算，超限裁剪，最早的提问始终保留
 - **可评估**：20 题端到端评测 + 11 题检索分层评测
-- **故障兜底**：9 个故障场景有明确定义的行为，其中 5 个有自动测试
+- **故障兜底**：12 个故障场景有明确定义的行为，其中 5 个有自动测试
+- **会话外置**：Redis 存会话（30 分钟滑动过期）+ Redis 会话锁，两个 worker 并发同一会话不丢消息
 
 ![接口文档](docs/screenshots/api-docs.png)
 
-**技术栈**：Python 3.13 · FastAPI · asyncio · SSE · DeepSeek · Function Calling · bge-m3 · pytest
+**技术栈**：Python 3.13 · FastAPI · asyncio · SSE · Redis · DeepSeek · Function Calling · bge-m3 · pytest
 
 ## 架构
 
@@ -21,15 +22,17 @@
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| HTTP 层 | `app/api.py` | 路由、SSE 封装、会话存储、并发锁。**全项目唯一知道 HTTP 存在的文件** |
+| HTTP 层 | `app/api.py` | 路由、SSE 封装。**全项目唯一知道 HTTP 存在的文件** |
 | 循环层 | `app/agent.py` | Agent 主循环：调模型 → 收集工具调用 → 执行 → 结果写回历史 |
 | 能力层 | `app/tools.py` / `app/rag.py` / `app/memory.py` | 工具实现 / 向量检索 / token 计量与裁剪 |
+| 存储层 | `app/session_store.py` | 会话读写接口、Memory/Redis 两个实现、会话锁 |
 | 基础层 | `app/llm.py` / `app/config.py` | 两个 API client / 环境变量读取与启动校验 |
 
 依赖方向单向向下，没有任何一层反向依赖上层：
 
 ```
 api  →  agent  →  tools  →  rag  →  llm  →  config
+     ↘  session_store  →  config
 ```
 
 这条约束换来三件事：
@@ -43,11 +46,11 @@ api  →  agent  →  tools  →  rag  →  llm  →  config
 ```
 POST /chat  { message, session_id }
   │
-  ├─ 取会话历史（无则新建，首条是 SYSTEM_PROMPT）
-  ├─ 按 session_id 加锁                    ← 同会话串行，跨会话并行
-  ├─ 追加 user 消息，记录插入位置
+  ├─ store.lock(session_id)               ← 同会话串行，跨会话并行，跨进程也串行
+  ├─ store.load(session_id)               ← 无则新建，首条是 SYSTEM_PROMPT
+  ├─ 追加 user 消息
   │
-  └─ run_agent(history)
+  ├─ run_agent(history)
        │
        └─ while True:
             ├─ trim()            超预算则裁剪，并把最早的问题钉回 system
@@ -57,8 +60,11 @@ POST /chat  { message, session_id }
                  ├─ 预算内 → 执行工具 → 结果以 role=tool 追加回历史
                  └─ 预算外 → 返回结构化错误，下一轮不再传 tools
   │
-  └─ 抛异常 → 回滚本轮消息 → 500
+  ├─ 正常结束 → store.save(session_id, history) → 200
+  └─ 抛异常   → 不保存 → 500
 ```
+
+**回滚在这里是「不提交」，不是「撤销」。**`load` 拿到的是副本，模型改的是副本，出错时根本没走到 `save`——存储里那份从头到尾没被碰过。
 
 四个工具：`get_order_status`（查订单）、`calculate_discount`（算差价）、`days_since_order`（算下单至今的自然日）、`search_policy`（检索政策文档）。
 
@@ -69,13 +75,14 @@ POST /chat  { message, session_id }
 ```
 customer-service-agent/
 ├── app/
-│   ├── api.py               FastAPI：4 个端点、SSE、会话与锁
+│   ├── api.py               FastAPI：4 个端点、SSE、会话读写调用
 │   ├── agent.py             Agent 循环（同步版 + 流式版）
 │   ├── tools.py             4 个工具实现 + 注册表
 │   ├── rag.py               向量检索
 │   ├── memory.py            token 计量、历史裁剪、最早问题钉回
 │   ├── llm.py               chat_client / embed_client
 │   ├── config.py            环境变量读取 + import 期校验
+│   ├── session_store.py     会话读写接口 + Memory/Redis 实现 + 会话锁
 │   ├── text.py              政策文档切块
 │   ├── bm25.py              对照实验：字级 bigram BM25（未接入主链路）
 │   ├── hybrid.py            对照实验：RRF 融合（未接入主链路）
@@ -93,7 +100,7 @@ customer-service-agent/
 │   ├── build_index.py       建 index.json
 │   ├── try_stream.py        命令行试流式（不走 HTTP）
 │   └── try_stream_http.py   走真实 HTTP + 测 TTFT
-├── tests/                   22 个测试
+├── tests/                   24 个测试
 ├── requirements.txt         直接依赖（手工整理）
 └── requirements-dev.txt     + pytest
 ```
@@ -106,7 +113,9 @@ customer-service-agent/
 
 如果只存下来不检查，故障会推迟到第一个请求：用户提问 → 上下文组装完 → 请求发出去 → 401。前面所有工作白做，而且报错位置离真正的原因隔了好几层。
 
-**代价**：`import app.config` 这个动作本身就要求密钥齐全，所以连跑单元测试都得先有 `.env`。
+**但 `REDIS_URL` 是例外，不检查。**判据只有一条：**缺了它，程序还有没有一个正确的运行方式？**没有模型密钥，系统没有任何可用路径，早崩比晚崩好；没有 Redis，`MemoryStore` 照样能扛单进程。所以前者是必需项，后者是可选优化——把可选硬件变成准入条件，会让新克隆仓库的人连 `pytest` 都跑不起来。
+
+**代价**：`import app.config` 这个动作本身就要求密钥齐全，所以连跑单元测试都得先有 `.env`。另外「可选」不等于「不管」——降级必须叫出声，`lifespan` 里会打一条 WARNING。
 
 ### 2. 工具异常降级，而不是上抛
 
@@ -122,18 +131,22 @@ customer-service-agent/
 
 **代价**：服务看着正常，但检索能力缺失。`/health` 只返回 `{"status": "ok"}`，**探测不到这个状态** —— 属于已知缺口。
 
-### 4. 锁的粒度是会话，不是全局
+### 4. 锁的粒度是会话，而且必须和存储同域
 
 并发安全只需要保证同一段历史不被同时改写。用一把全局锁也行，但那样所有用户会被串行化。
 
 ```python
-async with _lock_for(session_id):
+async with store.lock(session_id):
     ...
 ```
 
 同一个 `session_id` 串行，不同 `session_id` 并行。这个粒度有测试保证：`peak == 1` 与 `peak == 2`。
 
-**代价**：`_locks` 与 `_sessions` 都只增不减，会话多了会持续占内存。
+**但 `asyncio.Lock` 只在单进程内成立。**会话搬到 Redis 之后它就失效了——它是进程内的对象，两个 worker 各持一把同名的锁，互相不知道对方存在。实测两个 worker 同时发同一会话的两条消息，**5 条消息只剩 3 条，先到的那一轮被整体覆盖**。
+
+所以锁也搬进 Redis：`SET NX EX` 抢占、Lua 校验持有者后释放、120 秒自动过期兜底。改完之后同样的并发实验稳定得到 5 条，**而且第二个请求的耗时正好比第一个多出等待时间——它在门口排队，不是碰巧没撞上**。
+
+**代价**：锁的 TTL 是 120 秒。如果一次处理超过 120 秒，锁会自动释放，第二个请求进来，互斥就破了。取值依据是实测一轮 2-5 秒，120 秒是 20 倍余量。
 
 ### 5. 采集与分析分离
 
@@ -171,12 +184,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Copy-Item .env.example .env
 ```
 
-`.env` 里填两个值：
+`.env` 里有两个必需项和一个可选项：
 
-| 变量 | 用途 |
-|---|---|
-| `DEEPSEEK_API_KEY` | 对话与工具调用 |
-| `SILICONFLOW_API_KEY` | 文本向量化（建索引与检索） |
+| 变量 | 用途 | 必需 |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | 对话与工具调用 | 是 |
+| `SILICONFLOW_API_KEY` | 文本向量化（建索引与检索） | 是 |
+| `REDIS_URL` | 会话存储；不填则退回进程内存 | 否 |
 
 `.env` 已在 `.gitignore` 中，不会被提交。密钥缺失时 `app/config.py` 在 **import 阶段**就抛 `RuntimeError`，不会等到第一个请求才收到 401。
 
@@ -188,7 +202,32 @@ python -m scripts.build_index
 
 生成 `index.json`（同样在 `.gitignore` 中，**必须自己跑一次**）。修改 `data/docs/policy.txt` 后需要重跑。
 
-### 4. 启动服务
+### 4. 启动 Redis（可选，但多 worker 时必须）
+
+**不装也能跑**：`REDIS_URL` 为空时自动退回进程内存，单进程完全正常。装它的唯一理由是**多 worker 部署**——会话必须跨进程可见。
+
+Windows 上没有官方 Redis，用社区移植版 [tporadowski/redis](https://github.com/tporadowski/redis) 的 5.0.14 zip 包，解压即用，不需要 Docker/WSL：
+
+```powershell
+cd D:\redis
+.\redis-server.exe        # 前台运行，这个窗口别关
+```
+
+另开一个窗口验证：
+
+```powershell
+.\redis-cli.exe ping      # 期望 PONG
+```
+
+`.env` 里写：
+
+```
+REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+**协议上有个坑**：这个移植版停在 Redis 5.0，不支持 RESP3 握手，而 redis-py 8.x 默认就用 RESP3，连上去会直接报 `unknown command 'HELLO'`。`RedisStore` 里显式指定了 `protocol=2`。换成 Linux 上的 Redis 7 时这个参数留着也不影响，向后兼容。
+
+### 5. 启动服务
 
 ```powershell
 uvicorn app.api:app --reload
@@ -196,19 +235,27 @@ uvicorn app.api:app --reload
 
 打开 <http://127.0.0.1:8000/docs> 可以直接试接口。
 
-### 5. 跑测试
+多 worker 部署：
+
+```powershell
+uvicorn app.api:app --workers 2
+```
+
+会话和锁都在 Redis 里，进程数量不影响会话一致性——这一点用并发实验验证过，见「设计决策 4」。
+
+### 6. 跑测试
 
 ```powershell
 pytest
 ```
 
-22 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。由于 `config.py` 在 import 期校验密钥，**跑测试同样需要 `.env` 存在**。
+24 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
 
 ### 部署说明
 
 `requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出 —— 后者会把环境里所有传递依赖和无关包一起带上，换台机器装完仍然不知道哪些是真的需要的。
 
-完整性验证方式：建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，22 个测试全部通过。
+完整性验证方式：建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，24 个测试全部通过。
 
 **容器化未验证。** 尝试过 Docker Desktop + WSL2 后端，但宿主 Windows 的 `VirtualMachinePlatform` 组件每次启用后重启即被系统回滚（三次尝试，含 `DISM /RestoreHealth`），镜像未能在本地构建成功。因此本仓库不附带未经构建验证的 Dockerfile —— 一个写出来但跑不起来的 Dockerfile 比没有更糟。
 
@@ -245,6 +292,8 @@ pytest
 | `latency_ms` | 只统计 `run_agent` 的耗时，不含网络传输 |
 
 **并发语义**：同一个 `session_id` 的请求串行执行，不同 `session_id` 之间并行。原因是同一会话的两段历史是同一个列表，在 `await` 处交错写入会串消息。
+
+**这个串行在多个 worker 之间同样成立**——锁在 Redis 里，不在进程内存里。抢不到锁最多等 30 秒，超时抛 `TimeoutError`（当前表现为 500，见「已知局限」）。
 
 ### POST /chat/stream
 
@@ -389,13 +438,18 @@ easy 集四种方法全部 `5/5 / MRR 1.000` —— **说明这套 easy 题太�
 | 工具内部抛异常 | `_execute` 全部接住，转成 `{"error": ...}` 交回模型 | 代码路径，`_execute` 的 `except Exception` |
 | 工具执行超时 | 8 秒后返回超时错误，**不让协程等下去** | `test_tool_timeout_returns_error` |
 | 工具预算耗尽（>4 次） | 返回占位结果，下一轮请求**不再传 `tools`**，模型只能直接作答 | 手工（无自动测试） |
-| 模型调用抛异常 | 回滚本轮消息，返回 500 | `test_chat_returns_500_when_agent_fails` |
+| 模型调用抛异常 | 本轮**不保存**（存储里那份没被碰过），返回 500 | `test_chat_returns_500_when_agent_fails` |
 | 同会话并发 | 按 `session_id` 串行 | `test_same_session_requests_are_serialized` |
 | 跨会话并发 | 并行执行，互不阻塞 | `test_different_sessions_run_in_parallel` |
+| 未配置 `REDIS_URL` | 退回 `MemoryStore`，启动日志打 WARNING。单进程正常，多 worker 会串 | 手工：清空 `REDIS_URL` 后看启动日志 |
+| Redis 连不上 | 会话读写直接抛异常 → 500。**不可恢复**，最常见原因是 `redis-server.exe` 没启动 | 手工：停掉 Redis 后请求 `/chat` |
+| 抢锁超时（30 秒） | 抛 `TimeoutError` → 500。说明同一会话的上一条还在处理中 | 手工（无自动测试） |
 
 **这些测试做过变异验证**：把 `assert peak == 1` 改成 `assert 1 == 2`，确认测试会失败 —— 否则无法排除「测试恒为真」这种看起来通过、实际什么都没验证的情况。
 
-**回滚那一行值得单独说**：请求失败时要把本轮追加的 user 消息删掉，否则下一轮历史里会留一条没人回答的提问，模型会以为用户问过。`del history[before:]` 就是干这个的。
+**回滚这一条值得单独说**：请求失败时不能把这一轮写进会话，否则下一轮历史里会留一条没人回答的提问，模型会以为用户问过。
+
+会话外置之前，这件事靠 `del history[before:]` 手工撤销；外置之后它自然成立了——`load` 返回的是副本，模型改的是副本，**不出错才 `save`**。回滚从「撤销」变成了「不提交」。
 
 ## 已知局限
 
@@ -407,15 +461,17 @@ easy 集四种方法全部 `5/5 / MRR 1.000` —— **说明这套 easy 题太�
 | 「请稍后重试」用于不可恢复的错误 | 索引缺失时重试一万次也不会好，这句话会误导用户 | 按错误类型分措辞：可重试 / 需要人工介入 |
 | `/health` 探测不到依赖故障 | 索引缺失、密钥失效时它仍然返回 `ok` | 增加 `/ready`，检查 `index.json` 可读并做一次模型探活 |
 | `MAX_CONTEXT_TOKENS` 是软限制 | 硬顶 4000，但 `trim` 不会切掉当前问题，实际可能到 ~5100，再加上 ~800 的 tools 定义 | 预算里显式计入 tools 开销；超限时告警而不是静默截断 |
-| 会话存在进程内存 | 多 worker 部署时会话会串；进程重启全部丢失 | 换 Redis，带 TTL 自动回收 |
-| 历史混用 `dict` 和 pydantic 对象 | 每个读历史的地方都要 `isinstance` 判断，`memory.py` 里有专门的兼容函数 | 写入时统一转成 `dict`，读的地方就只需要一种处理 |
+| 抢锁超时返回 500 而不是 503 | 客户端分不清「服务器坏了」和「你的上一条还在处理中」 | 捕获 `TimeoutError`，返回 503 + `Retry-After` |
+| Redis 不可用时整站不可用 | 会话读写是每个请求的必经路径，没有本地兜底 | 加降级开关：Redis 异常时临时退回进程内存，牺牲一致性换可用性 |
+| 锁的 TTL 可能提前失效 | 单次处理超过 120 秒时锁自动释放，互斥失效 | 后台续期（watchdog），或让 TTL 远大于最长处理时间 |
+| `MemoryStore` 与 `RedisStore` 有一处行为差异 | 内存版不会过期，Redis 版 30 分钟自动回收，两者不完全等价 | 内存版加惰性过期；或者明说它只用于开发和测试 |
 | 超时的线程杀不死 | `asyncio.wait_for` 只能停止等待，被 `to_thread` 包住的线程还在跑 | 根因修法是客户端侧超时（httpx 的 timeout），而不是靠外部掐表 |
 | 工具预算耗尽的路径没有自动测试 | 只手工验证过一次 | 补一个测试，和 `test_tool_timeout_returns_error` 同样的写法 |
 | 工具异常文本可能被转述给用户 | 靠 system prompt 约束，属于软约束 | 输出侧加一层过滤，或者错误里不带原始 `{exc}` |
 
 ## 迭代记录
 
-四个都是**没有任何报错、但结果是错的**问题。
+五个都是**没有任何报错、但结果是错的**问题。
 
 ### 1. 20 道题全部通过，其实是评测在空转
 
@@ -461,7 +517,19 @@ return all(k in item["reply"] for k in keywords)
 
 **根因**：`history.append(用户消息)` 和 `history.append(助手回复)` 之间隔着 `await`。协程在这一步让出控制权，另一个请求插进来，把两条消息写进了同一个列表。
 
-**修复**：按 `session_id` 加 `asyncio.Lock`。粒度的选择见「设计决策 4」。
+**修复**：按 `session_id` 加锁。当时用的是 `asyncio.Lock`；后来会话外置到 Redis，锁也跟着换成了 Redis 锁，理由见「设计决策 4」。
+
+### 5. 会话外置之后才炸：SDK 对象存不进 JSON
+
+**现象**：把会话从进程内存搬到 Redis，第一次真实对话直接 500：`TypeError: Object of type ChatCompletionMessage is not JSON serializable`。
+
+**发现**：会话列表里混着两种东西。流式路径是从增量手工拼出来的，拼的是字典；非流式路径图省事，把模型 SDK 返回的对象直接 `append` 了进去。
+
+**根因**：`MemoryStore` 存的是引用，塞什么都能存下，所以这个不一致从来没暴露过。`RedisStore` 必须把会话序列化成字节——「会话里只能放纯数据」这个隐含要求，突然变成了显式要求。
+
+**修复**：非流式路径也手工拍平成字典，和流式路径写法一致；没有工具调用时整个不写 `tool_calls` 键，而不是写成 `null`。
+
+**这条最值得记住的地方**：它不是在写新功能时出的错，是**换了一种存储之后，暴露了一个一直存在的不一致**。外置状态的价值不只在「多进程能共享」，还包括「逼你说清楚状态到底是什么」。
 
 ## 许可
 
