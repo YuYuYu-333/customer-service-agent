@@ -82,9 +82,12 @@ python -m scripts.build_index
 
 生成 `index.json`（同样在 `.gitignore` 中，**必须自己跑一次**）。修改 `data/docs/policy.txt` 后需要重跑。
 
-### 4. 启动 Redis（可选，但多 worker 时必须）
+### 4. 启动 Redis（可选，多 worker 时才需要）
 
 **不装也能跑**：`REDIS_URL` 为空时自动退回进程内存，单进程完全正常。装它的唯一理由是**多 worker 部署**——会话必须跨进程可见。
+
+<details>
+<summary><b>Windows 上怎么装</b>（点开）</summary>
 
 Windows 上没有官方 Redis，用社区移植版 [tporadowski/redis](https://github.com/tporadowski/redis) 的 5.0.14 zip 包，解压即用，不需要 Docker/WSL：
 
@@ -106,6 +109,8 @@ REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 **协议上有个坑**：这个移植版停在 Redis 5.0，不支持 RESP3 握手，而 redis-py 8.x 默认就用 RESP3，连上去会直接报 `unknown command 'HELLO'`。`RedisStore` 里显式指定了 `protocol=2`。换成 Linux 上的 Redis 7 时这个参数留着也不影响，向后兼容。
+
+</details>
 
 ### 5. 启动服务
 
