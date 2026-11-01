@@ -483,6 +483,23 @@ easy 集四种方法全部 `5/5 / MRR 1.000` —— **说明这套 easy 题太�
 
 检索器一行没改，只改了输入。**这说明继续换检索算法是在错误的方向上努力。**
 
+### 怎么把对照实验接回主链路
+
+四个检索器签名一致：`(query, k) -> [(分数, 文本)]`，所以切换只动 `app/tools.py` 两行。
+
+```python
+from app.rag import search            # 向量，当前使用
+from app.bm25 import search_bm25      # 字面
+from app.hybrid import hybrid_search  # 融合
+from app.rerank import rerank_search  # 重排
+
+results = search(query)               # 第 106 行，换成上面任一函数即可
+```
+
+下游 `for _, text in results` 一个字都不用改。
+
+接上后最坏情况是可预期的：重排依赖外部 API，`rerank()` 失败会抛异常，但 `agent.py` 的 `_execute` 会把它转成 `{"error": ...}` 交给模型，用户收到的是“查不到，请稍后重试”而不是 500；`TOOL_TIMEOUT = 8` 也早于重排自身的 10 秒超时，会先触发。
+
 ### 评估本身的局限
 
 - **单次运行**：模型有随机性，同一套题重复跑结果会波动，本报告不代表稳定水平
