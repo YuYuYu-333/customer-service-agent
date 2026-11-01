@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from app.rag import search
+from app.hybrid import hybrid_search
 
 # 模块级缓存: 进程存活期间只读一次盘
 # 一次客服对话会多次调用工具,每次重读文件都产生磁盘IO
@@ -103,7 +103,7 @@ def search_policy(query):
     :param query: 用户的问题原文
     :return: 用分割线拼接的若干段政策原文
     """
-    results = search(query)
+    results = hybrid_search(query)
     return "\n\n---\n\n".join(text for _, text in results)
 
 

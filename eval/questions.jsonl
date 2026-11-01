@@ -1,14 +1,14 @@
 {"id": "fact-1", "type": "fact", "question": "订单10001到哪了", "expect_keywords": ["已发货", "SF1234567890"]}
 {"id": "fact-2", "type": "fact", "question": "订单10003是什么时候下的单", "expect_keywords": ["2026-10-10"]}
 {"id": "fact-3", "type": "fact", "question": "订单10005实付多少钱", "expect_keywords": ["1299"]}
-{"id": "fact-4", "type": "fact", "question": "原价259现价199,优惠了多少钱", "expect_keywords": ["60"]}
+{"id": "fact-4", "type": "fact", "question": "订单10001优惠了多少钱", "expect_keywords": ["60"]}
 {"id": "fact-5", "type": "fact", "question": "订单10004现在是什么状态", "expect_keywords": ["已退款"]}
 {"id": "rag-1", "type": "rag", "question": "手机激活了还能退吗", "expect_keywords": ["七天无理由"], "expect_section": "二、手机及数码产品"}
 {"id": "rag-2", "type": "rag", "question": "退货运费谁出", "expect_keywords": ["99"], "expect_section": "六、退货运费"}
 {"id": "rag-3", "type": "rag", "question": "生鲜食品坏了怎么处理", "expect_keywords": ["24"], "expect_section": "三、生鲜及冷冻食品"}
 {"id": "rag-4", "type": "rag", "question": "定制商品能退吗", "expect_keywords": ["不支持"], "expect_section": "四、定制类商品"}
 {"id": "rag-5", "type": "rag", "question": "退款多久到账", "expect_keywords": ["工作日"], "expect_section": "七、退款处理时效"}
-{"id": "refusal-1", "type": "refusal", "question": "能开发票吗", "expect": "refuse"}
+{"id": "refusal-1", "type": "refusal", "question": "可以货到付款吗", "expect": "refuse"}
 {"id": "refusal-2", "type": "refusal", "question": "七天无理由是从签收当天算还是次日算", "expect": "refuse"}
 {"id": "refusal-3", "type": "refusal", "question": "你们支持花呗分期吗", "expect": "refuse"}
 {"id": "refusal-4", "type": "refusal", "question": "可以配送到海外吗", "expect": "refuse"}

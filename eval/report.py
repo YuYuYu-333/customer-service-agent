@@ -10,7 +10,8 @@ import math
 from pathlib import Path
 
 from app.llm import CHAT_MODEL, chat_client
-from app.rag import TOP_K, search
+from app.rag import TOP_K
+from app.hybrid import hybrid_search
 
 _EVAL_DIR = Path(__file__).resolve().parent
 _RAW = _EVAL_DIR / "raw.json"
@@ -76,7 +77,7 @@ def recall_hit(item):
     if "expect_section" not in item:
         return None
 
-    hits = search(item["question"], TOP_K)
+    hits = hybrid_search(item["question"], TOP_K)
     prefix = "## " + item["expect_section"]
     return any(text.lstrip().startswith(prefix) for _, text in hits)
 
