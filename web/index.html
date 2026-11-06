@@ -103,6 +103,17 @@ const TOOL_LABELS = {
   create_ticket: "正在记录工单…"
 };
 
+// 模型输出的是 Markdown，这里只处理加粗；先转义再替换，避免回复内容里的尖括号被当成标签执行
+function escapeHtml(text) {
+  return text.replace(/[&<>]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
+  });
+}
+
+function renderAnswer(text) {
+  return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
 function addMessage(who, text) {
   const wrap = document.createElement("div");
   wrap.className = "msg" + (who === "你" ? " me" : "");
@@ -152,6 +163,7 @@ async function ask(question) {
   bubble.appendChild(tool);
   const answer = document.createElement("div");
   bubble.appendChild(answer);
+  let answerRaw = "";
   btn.disabled = true;
 
   try {
@@ -197,7 +209,9 @@ async function ask(question) {
           tool.textContent = TOOL_LABELS[event.name] || ("正在调用 " + event.name + "…");
         } else if (event.type === "delta") {
           tool.textContent = "";
-          answer.textContent += event.text;
+          answerRaw += event.text;
+          // 整段重绘而不是追加：`**` 可能被拆在两个 delta 里，只有拿到完整文本才能判断加粗
+          answer.innerHTML = renderAnswer(answerRaw);
         } else if (event.type === "done") {
           tool.textContent = "";
           renderSources(bubble, event.sources);
