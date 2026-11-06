@@ -119,9 +119,15 @@ pytest
 
 **<https://customer-service-agent-9o0y.onrender.com>** —— 点开就是对话界面，不用装任何东西。
 
-![在线 Demo](docs/screenshots/demo.png)
+![在线 Demo：查订单、查政策、转人工三段对话](docs/screenshots/demo.gif)
 
-回答底部那行「依据」是这个项目最想让人看到的东西：五个政策小节标签来自本轮真实检索到的段落，不是模型说自己引用了什么。灰色文字是工具调用次数和本轮 token。
+21 秒，三段对话，都是线上实例的真实响应（含模型延迟，没有加速）：
+
+1. **查订单** —— 模型自己决定调 `get_order_status`，回答底部出现 `订单 10001` 和「工具调用 1 次」
+2. **查政策** —— 调 `search_policy`，依据变成五个政策小节标签。这五个标签来自本轮真实检索到的段落，**不是模型说自己引用了什么**
+3. **转人工** —— 投诉没有工具可做，调 `create_ticket`，并如实转述「当前为演示环境，不会有人工坐席跟进」
+
+第三段是这张图最想让人看到的部分：**系统在承认自己做不到什么**。
 
 仓库根目录的 `render.yaml` 是一份可直接用的 Render 配置：
 
@@ -250,7 +256,7 @@ customer-service-agent/
 │   ├── setup.md             环境细节：Windows Redis、容器化为什么没做
 │   ├── retrieval.md         检索实验的完整数据与四条结论
 │   ├── iterations.md        八次迭代的完整复盘
-│   └── screenshots/demo.png 线上 Demo 的截图
+│   └── screenshots/demo.gif 线上 Demo 的 21 秒录屏
 ├── tests/                   43 个测试
 ├── requirements.txt         直接依赖（手工整理）
 └── requirements-dev.txt     + pytest
