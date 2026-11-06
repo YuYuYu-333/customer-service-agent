@@ -31,10 +31,10 @@ def test_tool_timeout_returns_error(monkeypatch):
     monkeypatch.setattr(agent, "TOOL_TIMEOUT", 0.1)
 
     call = _tool_call("search_policy", '{"query":"x"}')
-    content = asyncio.run(agent._run_tool(call))
+    content, sources = asyncio.run(agent._run_tool(call))
 
     assert "超时" in json.loads(content)["error"]
-
+    assert sources == []
 
 @pytest.fixture(autouse=True)
 def _clean_sessions():

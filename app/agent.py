@@ -13,7 +13,7 @@ from typing import NamedTuple
 
 from app.llm import CHAT_MODEL, chat_client
 from app.memory import pinned_questions, trim
-from app.metrics import TOOL_CALLS
+from app.metrics import TICKETS, TOOL_CALLS
 from app.tools import FUNCTIONS, TOOLS
 
 # 单次用户提问允许的工具调用总次数
@@ -30,7 +30,9 @@ SYSTEM_PROMPT = """你是电商平台的客服助手.
 3. 回答简洁,先给结论再给依据。
 4. 用户的问题超出客服范围时,礼貌说明无法处理。
 5. 只回答用户问到的问题。要补充用户没问的内容,必须先检索到依据,否则不要提。
-6. 检索只覆盖政策文档的一部分。说"没有规定"时要限定为"我这次查到的内容里没有",不要说成"政策里没有";并建议用户进一步确认。"""
+6. 检索只覆盖政策文档的一部分。说"没有规定"时要限定为"我这次查到的内容里没有",不要说成"政策里没有";并建议用户进一步确认。
+7. 只在四种情况转人工:用户明确要求;同一个问题连续两次工具都返回 error;涉及投诉、要求赔偿或明显情绪化;用户要求退款、取消订单、改地址这类你没有工具可做的写操作。其余情况直接回答,不要转人工。
+8. 转人工只能调用 create_ticket,并如实转述它返回的 notice。不要承诺"稍后联系您",也不要向用户索要手机号等个人信息。"""
 
 # 工具预算用完时返回给模型的占位结果.
 # 协议要求每个 tool_call 都必须有对应的 tool 消息,否则下一次请求直接 400.
@@ -50,11 +52,45 @@ class AgentResult(NamedTuple):
     reply: str
     tool_calls_used: int
     prompt_tokens: int
+    sources: tuple[dict, ...] = ()
+
+
+def _sources(name, args, result):
+    """从工具返回值里提取可核对的依据.工具失败时返回空列表."""
+    if isinstance(result, dict) and "error" in result:
+        return []
+
+    if name == "search_policy":
+        return [
+            {"type": "policy", "section": line[3:].strip()}
+            for line in str(result).splitlines()
+            if line.startswith("## ")
+        ]
+
+    order_id = result.get("order_id") if isinstance(result, dict) else None
+    order_id = order_id or args.get("order_id")
+    if order_id:
+        return [{"type": "order", "id": str(order_id)}]
+    return []
+
+
+def _dedup(sources):
+    """同一个订单查两次、同一节政策命中两次,只留一条, 保持首次出现的顺序."""
+    seen = set()
+    unique = []
+    for source in sources:
+        key = (source["type"], source.get("id") or source.get("section"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(source)
+    return unique
 
 
 def _execute(tool_call):
     """
-    执行一个工具调用,任何异常都转成结构化错误交给模型.
+    执行一个工具调用,返回 (给模型的结果文本,依据列表).
+    任何异常都转成结构化错误交给模型.
     """
     name = tool_call.function.name
     logger.info("调用工具 %s,参数: %s", name, tool_call.function.arguments)
@@ -63,7 +99,7 @@ def _execute(tool_call):
         args = json.loads(tool_call.function.arguments or "{}")
     except json.JSONDecodeError:
         logger.warning("工具参数不是合法 JSON: %s", tool_call.function.arguments)
-        return json.dumps({"error": f"调用 {name} 的参数格式错误"}, ensure_ascii=False)
+        return json.dumps({"error": f"调用 {name} 的参数格式错误"}, ensure_ascii=False), []
 
     function = FUNCTIONS.get(name)
     if function is None:
@@ -72,7 +108,8 @@ def _execute(tool_call):
         return json.dumps(
             {"error": f"没有名为{name}的工具,可用的是:{','.join(FUNCTIONS)}"},
             ensure_ascii=False,
-        )
+        ), []
+
     TOOL_CALLS.labels(tool=name).inc()
     try:
         result = function(**args)
@@ -82,8 +119,10 @@ def _execute(tool_call):
         return json.dumps(
             {"error": f"工具 {name} 执行失败:{exc},请告知用户稍后重试"},
             ensure_ascii=False,
-        )
-    return json.dumps(result, ensure_ascii=False)
+        ), []
+    if name == "create_ticket":
+        TICKETS.labels(category=result.get("category", "other")).inc()
+    return json.dumps(result, ensure_ascii=False), _sources(name, args, result)
 
 
 TOOL_TIMEOUT = 8
@@ -98,7 +137,7 @@ async def _run_tool(tool_call):
         )
     except asyncio.TimeoutError:
         logger.warning("工具 %s 超时", tool_call.function.name)
-        return _TOOL_TIMEOUT
+        return _TOOL_TIMEOUT, []
 
 
 def _call_obj(slot):
@@ -117,6 +156,7 @@ async def run_agent_stream(messages):
     tool_calls_used = 0
     tools_enabled = True
     prompt_tokens = 0
+    sources = []
 
     while True:
         view = trim(messages)
@@ -165,7 +205,7 @@ async def run_agent_stream(messages):
 
         if not slots:
             messages.append({"role": "assistant", "content": "".join(content)})
-            yield {"type": "done", "token": prompt_tokens, "tool": tool_calls_used}
+            yield {"type": "done", "token": prompt_tokens, "tool": tool_calls_used, "sources": _dedup(sources)}
             return
 
         calls = [_call_obj(slots[i]) for i in sorted(slots)]
@@ -191,10 +231,11 @@ async def run_agent_stream(messages):
             yield {"type": "tool", "name": call.function.name}
             if tool_calls_used < MAX_TOOL_CALLS:
                 tool_calls_used += 1
-                result = await _run_tool(call)
+                result, found = await _run_tool(call)
             else:
                 tools_enabled = False
-                result = _BUDGET_EXCEEDED
+                result, found = _BUDGET_EXCEEDED, []
+            sources.extend(found)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
 
@@ -207,6 +248,7 @@ async def run_agent(messages):
     tool_calls_used = 0
     tools_enabled = True
     prompt_tokens = 0
+    sources = []
 
     while True:
         # 每轮重新裁剪:循环里刚追加的工具消息必须出现在下一次请求里.
@@ -249,15 +291,16 @@ async def run_agent(messages):
         messages.append(entry)
 
         if not message.tool_calls:
-            return AgentResult(message.content, tool_calls_used, prompt_tokens)
+            return AgentResult(message.content, tool_calls_used, prompt_tokens, _dedup(sources))
 
         for tool_call in message.tool_calls:
             if tool_calls_used < MAX_TOOL_CALLS:
                 tool_calls_used += 1
-                content = await _run_tool(tool_call)
+                content, found = await _run_tool(tool_call)
             else:
                 tools_enabled = False
-                content = _BUDGET_EXCEEDED
+                content, found = _BUDGET_EXCEEDED, []
+            sources.extend(found)
 
             messages.append(
                 {

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能电商客服 Agent</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f6f7f9;
+    color: #1f2328;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 20px 16px 120px; }
+  header { display: flex; align-items: baseline; gap: 12px; }
+  h1 { font-size: 18px; margin: 0; }
+  header button {
+    margin-left: auto; padding: 6px 12px; font-size: 13px;
+    border: 1px solid #d1d5db; border-radius: 8px; background: #fff; cursor: pointer;
+  }
+  .notice {
+    margin: 12px 0 0; padding: 10px 12px; font-size: 12px; line-height: 1.6;
+    color: #6b7280; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+  }
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 20px; }
+  .examples button {
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+    border: 1px solid #c7d2fe; border-radius: 999px; background: #eef2ff; color: #3730a3;
+  }
+  .msg { margin-bottom: 16px; }
+  .who { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+  .bubble {
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+    padding: 12px 14px; white-space: pre-wrap; word-break: break-word;
+  }
+  .me .bubble { background: #eef2ff; border-color: #c7d2fe; }
+  .err { color: #b91c1c; }
+  .tool { font-size: 12px; color: #6b7280; margin-bottom: 6px; }
+  .sources { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #e5e7eb; }
+  .sources .label { font-size: 12px; color: #6b7280; }
+  .chip {
+    display: inline-block; margin: 4px 6px 0 0; padding: 2px 8px; font-size: 12px;
+    border-radius: 999px; background: #f3f4f6; color: #374151;
+  }
+  .meta { font-size: 12px; color: #6b7280; margin-top: 8px; }
+  form {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: #fff; border-top: 1px solid #e5e7eb; padding: 12px 16px;
+  }
+  .row { max-width: 760px; margin: 0 auto; display: flex; gap: 8px; }
+  input[type=text] {
+    flex: 1; padding: 10px 12px; font-size: 15px;
+    border: 1px solid #d1d5db; border-radius: 8px;
+  }
+  input[type=text]:focus { outline: 2px solid #bfdbfe; border-color: #93c5fd; }
+  button[type=submit] {
+    padding: 10px 20px; font-size: 15px; border: 0; border-radius: 8px;
+    background: #2563eb; color: #fff; cursor: pointer;
+  }
+  button[type=submit]:disabled { background: #9ca3af; cursor: default; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>智能电商客服 Agent</h1>
+    <button id="reset" type="button">新会话</button>
+  </header>
+
+  <div class="notice">
+    所有工具都是只读查询，不会执行退款、改地址等写操作——写操作需要鉴权与二次确认，不在本 Demo 范围内。<br>
+    每次对话都会消耗 API 调用，服务设有每日额度上限，用完后会提示明天再试。
+  </div>
+
+  <div class="examples">
+    <button type="button" data-q="订单10001到哪了">查订单</button>
+    <button type="button" data-q="退货运费谁出">查政策</button>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<form id="form">
+  <div class="row">
+    <input id="q" type="text" maxlength="2000" placeholder="输入问题…" autocomplete="off">
+    <button id="btn" type="submit">发送</button>
+  </div>
+</form>
+
+<script>
+const log = document.getElementById("log");
+const form = document.getElementById("form");
+const input = document.getElementById("q");
+const btn = document.getElementById("btn");
+
+const TOOL_LABELS = {
+  get_order_status: "正在查询订单…",
+  calculate_discount: "正在计算优惠…",
+  days_since_order: "正在计算天数…",
+  search_policy: "正在检索售后政策…",
+  create_ticket: "正在记录工单…"
+};
+
+function addMessage(who, text) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg" + (who === "你" ? " me" : "");
+  const label = document.createElement("div");
+  label.className = "who";
+  label.textContent = who;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  if (text) bubble.textContent = text;
+  wrap.append(label, bubble);
+  log.appendChild(wrap);
+  window.scrollTo(0, document.body.scrollHeight);
+  return bubble;
+}
+
+function renderSources(bubble, sources) {
+  if (!sources || !sources.length) return;
+  const box = document.createElement("div");
+  box.className = "sources";
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = "依据";
+  box.appendChild(label);
+  sources.forEach(function (source) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = source.type === "order"
+      ? "订单 " + source.id
+      : source.section;
+    box.appendChild(chip);
+  });
+  bubble.appendChild(box);
+}
+
+function renderMeta(bubble, event) {
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = "工具调用 " + event.tool + " 次 · 输入 token " + event.token;
+  bubble.appendChild(meta);
+}
+
+async function ask(question) {
+  addMessage("你", question);
+  const bubble = addMessage("助手", "");
+  const tool = document.createElement("div");
+  tool.className = "tool";
+  bubble.appendChild(tool);
+  const answer = document.createElement("div");
+  bubble.appendChild(answer);
+  btn.disabled = true;
+
+  try {
+    const response = await fetch("/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: question,
+        session_id: localStorage.getItem("session_id")
+      })
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(function () { return {}; });
+      bubble.textContent = "请求失败（" + response.status + "）：" + (data.detail || "未知错误");
+      bubble.classList.add("err");
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop();
+
+      frames.forEach(function (frame) {
+        const line = frame.trim();
+        if (!line.startsWith("data:")) return;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") return;
+
+        let event;
+        try { event = JSON.parse(payload); } catch (e) { return; }
+
+        if (event.type === "session") {
+          localStorage.setItem("session_id", event.session_id);
+        } else if (event.type === "tool") {
+          tool.textContent = TOOL_LABELS[event.name] || ("正在调用 " + event.name + "…");
+        } else if (event.type === "delta") {
+          tool.textContent = "";
+          answer.textContent += event.text;
+        } else if (event.type === "done") {
+          tool.textContent = "";
+          renderSources(bubble, event.sources);
+          renderMeta(bubble, event);
+        } else if (event.type === "error") {
+          bubble.classList.add("err");
+          bubble.textContent = "出错了：" + event.message;
+        }
+      });
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+  } catch (error) {
+    bubble.textContent = "网络错误，请重试";
+    bubble.classList.add("err");
+  } finally {
+    btn.disabled = false;
+    input.focus();
+  }
+}
+
+form.addEventListener("submit", function (event) {
+  event.preventDefault();
+  const question = input.value.trim();
+  if (!question) return;
+  input.value = "";
+  ask(question);
+});
+
+document.querySelectorAll(".examples button").forEach(function (button) {
+  button.addEventListener("click", function () {
+    input.value = button.dataset.q;
+    input.focus();
+  });
+});
+
+document.getElementById("reset").addEventListener("click", function () {
+  localStorage.removeItem("session_id");
+  log.innerHTML = "";
+  input.focus();
+});
+</script>
+</body>
+</html>

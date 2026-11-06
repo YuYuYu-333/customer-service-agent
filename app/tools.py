@@ -7,6 +7,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from app.hybrid import hybrid_search
 
@@ -107,6 +108,34 @@ def search_policy(query):
     return "\n\n---\n\n".join(text for _, text in results)
 
 
+_TICKET_CATEGORIES = ("complaint", "refund", "order", "other")
+
+# 工单只存在进程内存里.Demo没有人工坐席,也没有持久化,
+# 重启即丢——notice 里要如实说明,不能让用户以为真的有人接手.
+_TICKETS = []
+
+
+def create_ticket(category, summary):
+    """
+    记录一条转人工工单.
+    :param category: 工单类型,不在白名单里的一律归为 other
+    :param summary: 一句话概括诉求
+    :return: 含 ticket_id / status / notice 的字典
+    """
+    if category not in _TICKET_CATEGORIES:
+        category = "other"
+
+    ticket = {
+        "ticket_id": "T-" + uuid4().hex[:6],
+        "status": "open",
+        "category": category,
+        "summary": summary,
+        "notice": "工单已记录。当前为演示环境,不会有人工坐席跟进。",
+    }
+    _TICKETS.append(ticket)
+    return ticket
+
+
 TOOLS = [
     {
         "type": "function",
@@ -205,6 +234,35 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_ticket",
+            "description": (
+                "为用户创建转人工工单,返回工单号和状态."
+                "只在四种情况使用:用户明确要求转人工;同一个问题连续两次工具都返回 error;"
+                "涉及投诉、要求赔偿或明显情绪化;用户要求退款、取消订单、修改地址等你没有工具可执行的写操作。"
+                "其余情况直接回答,不要转人工。"
+                "不要向用户索要手机号、身份证号等个人信息。"
+                "创建后如实转述返回的 notice,不要承诺稍后联系或保证处理时限."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["complaint", "refund", "order", "other"],
+                        "description": "工单类型",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "一句话概括用户诉求,不要包含手机号等个人信息",
+                    },
+                },
+                "required": ["category", "summary"],
+            },
+        },
+    },
 ]
 
 FUNCTIONS = {
@@ -212,6 +270,7 @@ FUNCTIONS = {
     "calculate_discount": calculate_discount,
     "search_policy": search_policy,
     "days_since_order": days_since_order,
+    "create_ticket": create_ticket,
 }
 
 if __name__ == '__main__':

@@ -8,10 +8,11 @@ import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
@@ -118,6 +119,7 @@ class ChatResponse(BaseModel):
     tools_used: int
     tokens: int
     latency_ms: int
+    sources: list[dict] = Field(default_factory=list, description="本轮工具返回过的依据")
 
 
 @app.get("/health")
@@ -193,6 +195,7 @@ async def chat(req: ChatRequest, _: None = Depends(_check_limits)):
         tools_used=result.tool_calls_used,
         tokens=result.prompt_tokens,
         latency_ms=latency_ms,
+        sources=list(result.sources),
     )
 
 
@@ -244,3 +247,12 @@ async def chat_stream(req: ChatRequest, _: None = Depends(_check_limits)):
 @app.get("/metrics")
 async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+_WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+async def index():
+    """单页 Demo。没有前端构建步骤，直接返回这一个文件。"""
+    return FileResponse(_WEB_INDEX)

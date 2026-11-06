@@ -125,6 +125,31 @@ def test_chat_stream_emits_events(monkeypatch):
     assert "[DONE]" in body
 
 
+def test_chat_returns_sources(monkeypatch):
+    async def agent_with_sources(history):
+        return AgentResult("已发货", 1, 100, ({"type": "order", "id": "10001"},))
+
+    monkeypatch.setattr(api, "run_agent", agent_with_sources)
+
+    response = client.post("/chat", json={"message": "订单10001到哪了"})
+
+    assert response.status_code == 200
+    assert response.json()["sources"] == [{"type": "order", "id": "10001"}]
+
+
+def test_stream_done_event_carries_sources(monkeypatch):
+    async def fake_stream(messages):
+        yield {"type": "delta", "text": "你好"}
+        yield {"type": "done", "token": 10, "tool": 0, "sources": [{"type": "policy", "section": "六、退货运费"}]}
+
+    monkeypatch.setattr(api, "run_agent_stream", fake_stream)
+
+    with client.stream("POST", "/chat/stream", json={"message": "hi"}) as resp:
+        body = "".join(resp.iter_text())
+
+    assert "六、退货运费" in body
+
+
 def test_chat_returns_503_when_session_busy(monkeypatch):
     from app.session_store import SessionBusy
 

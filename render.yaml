@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: customer-service-agent
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt && python -m scripts.build_index
+    startCommand: uvicorn app.api:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.0"
+      # 这两个不写值,sync: false 表示"部署后在面板里手工填",不会进仓库
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: SILICONFLOW_API_KEY
+        sync: false
+      # 不配 REDIS_URL:免费实例没有 Redis,自动退回 MemoryStore,单进程够用
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "10"
+      - key: DAILY_TOKEN_LIMIT
+        value: "1000000"
