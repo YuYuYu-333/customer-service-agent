@@ -13,6 +13,7 @@ from typing import NamedTuple
 
 from app.llm import CHAT_MODEL, chat_client
 from app.memory import pinned_questions, trim
+from app.metrics import TOOL_CALLS
 from app.tools import FUNCTIONS, TOOLS
 
 # 单次用户提问允许的工具调用总次数
@@ -66,12 +67,13 @@ def _execute(tool_call):
 
     function = FUNCTIONS.get(name)
     if function is None:
+        TOOL_CALLS.labels(tool="unknown").inc()
         logger.warning("模型请求了未注册的工具: %s", name)
         return json.dumps(
             {"error": f"没有名为{name}的工具,可用的是:{','.join(FUNCTIONS)}"},
             ensure_ascii=False,
         )
-
+    TOOL_CALLS.labels(tool=name).inc()
     try:
         result = function(**args)
     except Exception as exc:

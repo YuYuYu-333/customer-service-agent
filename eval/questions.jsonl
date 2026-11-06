@@ -8,8 +8,9 @@
 {"id": "rag-3", "type": "rag", "question": "生鲜食品坏了怎么处理", "expect_keywords": ["24"], "expect_section": "三、生鲜及冷冻食品"}
 {"id": "rag-4", "type": "rag", "question": "定制商品能退吗", "expect_keywords": ["不支持"], "expect_section": "四、定制类商品"}
 {"id": "rag-5", "type": "rag", "question": "退款多久到账", "expect_keywords": ["工作日"], "expect_section": "七、退款处理时效"}
+{"id": "rag-6", "type": "rag", "question": "七天无理由是从签收当天算还是次日算", "expect_section": "八、换货规则"}
 {"id": "refusal-1", "type": "refusal", "question": "可以货到付款吗", "expect": "refuse"}
-{"id": "refusal-2", "type": "refusal", "question": "七天无理由是从签收当天算还是次日算", "expect": "refuse"}
+{"id": "refusal-2", "type": "refusal", "question": "你们有线下门店吗", "expect": "refuse"}
 {"id": "refusal-3", "type": "refusal", "question": "你们支持花呗分期吗", "expect": "refuse"}
 {"id": "refusal-4", "type": "refusal", "question": "可以配送到海外吗", "expect": "refuse"}
 {"id": "refusal-5", "type": "refusal", "question": "会员积分怎么用", "expect": "refuse"}

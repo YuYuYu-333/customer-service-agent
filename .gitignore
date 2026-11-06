@@ -6,7 +6,6 @@ index.json
 *.pyc
 __pycache__/
 .pytest_cache/
-eval/raw.json
 
 # 本地笔记,不进仓库
 PROJECT_PLAN.md

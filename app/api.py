@@ -4,32 +4,34 @@ HTTP 接口层.
 负责会话隔离、参数校验、异常转换和耗时统计.
 不负责对话逻辑,也不负责上下文裁剪.
 """
-
 import asyncio
 import json
-import logging
 import time
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
+import logging
 from app.agent import SYSTEM_PROMPT, run_agent, run_agent_stream
 from app.config import REDIS_URL
 from app.limits import QuotaExceeded, RateLimited, charge_tokens, check_quota, check_rate
+from app.logging import request_id_var, setup_logging
+from app.metrics import DURATION, REJECTED, REQUESTS, TOKENS
 from app.rag import get_index
 from app.session_store import SessionBusy, SessionStore, build_store
 from app.tools import get_order_status
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app):
     """启动时检查索引:缺失就告警,存在就预热缓存"""
+    setup_logging()
     try:
         get_index()
         logger.info("政策索引加载完成")
@@ -50,6 +52,40 @@ app = FastAPI(title="智能电商客服 Agent", lifespan=lifespan)
 store: SessionStore = build_store()
 
 
+def _endpoint_label(request: Request) -> str:
+    """用路由模板做标签:/orders/10001 和 /orders/10002 必须算同一条指标"""
+    route = request.scope.get("route")
+    return getattr(route, "path", "unmatched")
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid4().hex[:12]
+    token = request_id_var.set(request_id)
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        REQUESTS.labels(endpoint="unmatched", status="500").inc()
+        logger.exception("request failed")
+        raise
+    else:
+        endpoint = _endpoint_label(request)
+        latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        REQUESTS.labels(endpoint=endpoint, status=str(response.status_code)).inc()
+
+        DURATION.labels(endpoint=endpoint).observe(latency_ms / 1000)
+        response.headers["X-Request-ID"] = request_id
+        logger.info("request", extra={
+            "path": endpoint,
+            "status": response.status_code,
+            "latency_ms": latency_ms,
+        })
+        return response
+    finally:
+        request_id_var.reset(token)
+
+
 async def _check_limits(request: Request) -> None:
     """请求前置检查:限流 + 配额.超了直接抛 HTTPException."""
     client_ip = request.client.host if request.client else "unknown"
@@ -57,8 +93,10 @@ async def _check_limits(request: Request) -> None:
         await check_rate(store, client_ip)
         await check_quota(store)
     except RateLimited:
+        REJECTED.labels(reason="rate").inc()
         raise HTTPException(status_code=429, detail="请求太频繁,请稍后再试")
     except QuotaExceeded:
+        REJECTED.labels(reason="quota").inc()
         raise HTTPException(status_code=503, detail="今日额度已用完,请明天再试")
 
 
@@ -147,6 +185,7 @@ async def chat(req: ChatRequest, _: None = Depends(_check_limits)):
         raise HTTPException(status_code=503, detail="该会话正在处理上一条消息,请稍后重试")
 
     await charge_tokens(store, result.prompt_tokens)
+    TOKENS.inc(result.prompt_tokens)
 
     return ChatResponse(
         reply=result.reply,
@@ -188,6 +227,8 @@ async def chat_stream(req: ChatRequest, _: None = Depends(_check_limits)):
                 else:
                     await store.save(session_id, history)
                     await charge_tokens(store, used_tokens)
+
+                    TOKENS.inc(used_tokens)
         except SessionBusy:
             yield _sse({"type": "error", "message": "该会话正在处理上一条消息,请稍后重试"})
 
@@ -198,3 +239,8 @@ async def chat_stream(req: ChatRequest, _: None = Depends(_check_limits)):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

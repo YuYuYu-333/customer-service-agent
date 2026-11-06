@@ -88,18 +88,30 @@ def percentile(values, p):
     return ordered[max(index, 0)]
 
 
+def distribution(values):
+    """返回 min/P50/P90/max。不给均值——均值会被一次超长回答带偏。"""
+    ordered = sorted(values)
+    return {
+        "min": ordered[0],
+        "p50": percentile(ordered, 0.50),
+        "p90": percentile(ordered, 0.90),
+        "max": ordered[-1],
+    }
+
+
 async def evaluate(results):
     for item in results:
-        if "verdict" in item:
+        if "verdict" not in item:
             # 判过的直接用缓存,不再花钱
-            continue
+            if keyword_pass(item):
+                item["verdict"] = True
+                item["method"] = "关键词"
+            else:
+                item["verdict"] = await judge(item)
+                item["method"] = "裁判"
 
-        if keyword_pass(item):
-            item["verdict"] = True
-            item["method"] = "关键词"
-        else:
-            item["verdict"] = await judge(item)
-            item["method"] = "裁判"
+        # recall 由题目本身决定(问题文本 + expect_section), 和模型回答无关,
+        # 所以不缓存:改了 expect_section 就该立刻反映出来
         item["recall"] = recall_hit(item)
 
     _RAW.write_text(
@@ -112,31 +124,56 @@ async def evaluate(results):
 def build_report(results):
     total = len(results)
     passed = sum(1 for r in results if r["verdict"])
-    latencies = [r["latency_ms"] for r in results]
     tokens = [r["tokens"] for r in results]
+    meta = results[0] if results else {}
+    kinds = sorted({r["type"] for r in results})
 
     lines = [
         "# 评估报告",
+        "",
+        "## 运行信息",
+        "",
+        "| 项 | 值 |",
+        "|---|---|",
+        f"| 模型 | {meta.get('model', '-')} |",
+        f"| 提交 | {meta.get('commit', '-')} |",
+        f"| 时间 | {meta.get('run_at', '-')} |",
+        f"| 题数 | {total} |",
         "",
         "## 总览",
         "",
         "| 指标 | 值 |",
         "|---|---|",
         f"| 端到端正确率 | {passed}/{total} ({passed / total:.1%}) |",
-        f"| 平均延迟 | {sum(latencies) // total} ms |",
-        f"| P95 延迟 | {percentile(latencies, 0.95)} ms | ",
-        f"| 平均输入 token | {sum(tokens) // total} |",
-        "",
+        f"| 平均输入 token | {sum(tokens) // total} | ", "",
         "## 分类型正确率",
         "",
         "| 类型 | 通过/总数 | 正确率 |",
         "|---|---|---|",
     ]
 
-    for kind in ("fact", "rag", "refusal", "adversarial"):
+    for kind in kinds:
         rows = [r for r in results if r["type"] == kind]
         ok = sum(1 for r in rows if r["verdict"])
         lines.append(f"| {kind} | {ok}/{len(rows)} | {ok / len(rows):.1%} | ")
+
+    lines += [
+        "",
+        "## 延迟分布",
+        "",
+        "| 范围 | min | P50 | P90 | max |",
+        "|---|---|---|---|---|",
+    ]
+    groups = [("全部", results)] + [
+        (kind, [r for r in results if r["type"] == kind]) for kind in kinds
+    ]
+    for name, rows in groups:
+        d = distribution([r["latency_ms"] for r in rows])
+        lines.append(f"| {name} | {d['min']} | {d['p50']} | {d['p90']} | {d['max']} | ")
+    lines += [
+        "",
+        f"n={total} 时 P95 已经接近最大值, 不能当尾延迟指标; 要报 P99 至少需要 n≥100。",
+    ]
 
     rag_rows = [r for r in results if r["recall"] is not None]
     if rag_rows:
@@ -163,16 +200,32 @@ def build_report(results):
             f"| {r['tools_used']} | {r['latency_ms']} | "
         )
 
+    failed = [r for r in results if not r["verdict"]]
+    lines += ["", "## 未通过", ""]
+    if not failed:
+        lines.append("无。")
+    else:
+        lines += [
+            "| id | 类型 | 问题 | 判定 | 回答摘要 | ",
+            " | --- | --- | --- | --- | --- | "
+        ]
+    for r in failed:
+        snippet = r["reply"].replace("\n", " ")[:60]
+        lines.append(
+            f"| {r['id']} | {r['type']} | {r['question']}"
+            f"| {r['method']} | {snippet} |"
+        )
+
     lines += [
         "",
         "## 局限",
         "",
         "- **单次运行**：模型有随机性，同一套题重复跑结果会波动，本报告不代表稳定水平。",
         "- **判定依赖 LLM 裁判**：裁判本身是概率性的，会误判；关键词判定则存在假阴性。",
-        "- **样本量 20 题**：一题即 5 个百分点，只能反映方向，不能给出置信区间。",
+        f"- **样本量 {total} 题**：一题即 {100 / total:.1f} 个百分点，只能反映方向，给不出置信区间。",
         "- **题库由开发者编写**：可能存在无意识贴合自身实现表述的偏差。",
         "- **recall@k 只评检索是否命中**：不评命中之后模型有没有用好。",
-        "- **100% 不代表生产可用**：线上真实问题的分布与这 20 题不同。",
+        f"- **{passed / total:.0%} 不代表生产可用**：线上真实问题的分布与这 {total} 题不同。",
     ]
 
     return "\n".join(lines) + "\n"

@@ -5,6 +5,8 @@ run_agent 被替换成假的,测试只关心路由行为:状态码、会话隔�
 """
 
 import asyncio
+import json
+import logging
 from datetime import date
 
 import pytest
@@ -12,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app import api
 from app.agent import AgentResult
+from app.logging import JsonFormatter, request_id_var
 from app.session_store import MemoryStore
 
 client = TestClient(api.app)
@@ -157,3 +160,25 @@ def test_tokens_are_charged_after_success(fake_agent):
     used = asyncio.run(api.store.get_int(f"quota:{date.today().isoformat()}"))
 
     assert used == 100
+
+
+def test_metrics_endpoint():
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "chat_requests_total" in response.text
+
+
+def test_health_has_request_id():
+    response = client.get("/health")
+    assert response.headers["x-request-id"]
+
+
+def test_log_line_is_json():
+    token = request_id_var.set("abc123")
+    try:
+        record = logging.LogRecord("t", logging.INFO, __file__, 1, "hello", None, None)
+        data = json.loads(JsonFormatter().format(record))
+    finally:
+        request_id_var.reset(token)
+    assert data["message"] == "hello"
+    assert data["request_id"] == "abc123"
