@@ -42,124 +42,36 @@
 | 想了解什么 | 看这一节 |
 |---|---|
 | 不想装环境，直接点开试 | [在线演示](#在线演示) |
-| 5 分钟跑起来 | [快速开始](#快速开始) |
-| 部署到 Render、免费实例的限制 | [部署](#部署) |
+| 5 分钟跑起来 | [快速开始](#快速开始)；完整步骤见 [docs/quickstart.md](docs/quickstart.md) |
+| 部署到 Render、免费实例的限制 | [docs/deploy.md](docs/deploy.md) |
 | 分成哪几层、一次请求怎么走、仓库里有什么 | [架构](#架构) |
-| 7 个端点和状态码 | [接口](#接口) |
+| 7 个端点和状态码 | [接口](#接口)；字段与示例见 [docs/api.md](docs/api.md) |
 | 每个选择为什么这么做、代价是什么 | [设计决策](#设计决策) |
 | 怎么证明它是对的 | [评估](#评估) |
 | 16 个故障场景的定义行为 | [故障处理](#故障处理) |
 | 21 条已知局限，每条都写了该怎么改 | [已知局限](#已知局限) |
 | 九次「没有报错但结果是错的」 | [迭代记录](#迭代记录) |
-| 完整数据：检索实验、环境细节、迭代复盘 | [docs/](docs/setup.md) |
+| 完整细节：快速开始、部署、接口、检索实验、迭代复盘 | [docs/](docs/) |
 | 许可 | [许可](#许可) |
 
 ## 快速开始
 
-> 需要 Python **3.10 或更高**（代码里用了 `str | None` 这类语法）。本项目在 **3.13.15** 上开发并验证；CI 在 **Ubuntu + Python 3.13** 上跑同一套测试，所以代码本身不依赖 Windows——下面命令里的路径写法是 Windows 的，Linux/macOS 换成对应的即可。
->
-> **最短路径**：只想跑起来看效果，可以跳过第 4 步——Redis 是可选的，不装也能单进程运行。
-
-### 1. 安装依赖
+需要 Python 3.10 或更高（本项目在 3.13.15 上开发，CI 在 Ubuntu + 3.13 上跑同一套）。Windows PowerShell 写法：
 
 ```powershell
+git clone https://github.com/YuYuYu-333/customer-service-agent.git
+cd customer-service-agent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-```
-
-PowerShell 首次执行报 `禁止运行脚本` 时，先开一次当前会话的策略：
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
-
-**Linux / macOS**：激活命令换成 `source .venv/bin/activate`，其余相同。Redis 用官方版即可，不需要 Windows 移植版。
-
-### 2. 配置密钥
-
-```powershell
-Copy-Item .env.example .env
-```
-
-`.env` 里有两个必需项和一个可选项：
-
-| 变量 | 用途 | 必需 |
-|---|---|---|
-| `DEEPSEEK_API_KEY` | 对话与工具调用 | 是 |
-| `SILICONFLOW_API_KEY` | 文本向量化（建索引与检索） | 是 |
-| `REDIS_URL` | 会话存储；不填则退回进程内存 | 否 |
-| `RATE_LIMIT_PER_MINUTE` | 每 IP 每分钟请求上限，默认 10 | 否 |
-| `DAILY_TOKEN_LIMIT` | 每日 prompt token 上限，默认 1000000 | 否 |
-
-`.env` 已在 `.gitignore` 中，不会被提交。密钥缺失时 `app/config.py` 在 **import 阶段**就抛 `RuntimeError`，不会等到第一个请求才收到 401。
-
-### 3. 建检索索引
-
-```powershell
+Copy-Item .env.example .env      # 填 DEEPSEEK_API_KEY 和 SILICONFLOW_API_KEY
 python -m scripts.build_index
-```
-
-生成 `index.json`（同样在 `.gitignore` 中，**必须自己跑一次**）。修改 `data/docs/policy.txt` 后需要重跑。
-
-### 4. 启动 Redis（可选）
-
-**不装也能跑**：`REDIS_URL` 为空时自动退回进程内存，单进程完全正常。装它的唯一理由是**多 worker 部署**——会话必须跨进程可见。
-
-Windows 上的装法，以及那个 `unknown command 'HELLO'` 的协议坑（redis-py 8.x 默认 RESP3，社区移植版停在 5.0），见 [docs/setup.md](docs/setup.md)。
-
-### 5. 启动服务
-
-```powershell
 uvicorn app.api:app --reload
 ```
 
-打开 <http://127.0.0.1:8000/docs> 可以直接试接口。
+打开 <http://127.0.0.1:8000> 就能直接问。Redis 不装也能跑，单进程会退回进程内存。
 
-多 worker 部署：
-
-```powershell
-uvicorn app.api:app --workers 2
-```
-
-会话和锁都在 Redis 里，进程数量不影响会话一致性——这一点用并发实验验证过，见「设计决策 4」。
-
-### 6. 跑测试
-
-```powershell
-pytest
-```
-
-47 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
-
-## 部署
-
-### Render
-
-仓库根目录的 `render.yaml` 是一份可直接用的 Render 配置：
-
-| 配置项 | 值 | 为什么 |
-|---|---|---|
-| `buildCommand` | `pip install -r requirements.txt && python -m scripts.build_index` | `index.json` 在 `.gitignore` 里，必须在构建阶段生成。放在构建而不是启动，是因为每次冷启动都重建等于每次醒来都多一次 embedding 调用 |
-| `startCommand` | `uvicorn ... --proxy-headers --forwarded-allow-ips="*"` | **不加这两个参数，限流会把所有访客算成一个人**，见下 |
-| `healthCheckPath` | `/health` | 用 `/health` 而不是 `/ready`：后者会查存储，冷启动期间可能还没就绪 |
-| `DEEPSEEK_API_KEY` / `SILICONFLOW_API_KEY` | `sync: false` | 声明变量名但不写值，值只能在 Render 面板里填。**仓库里搜不到任何密钥** |
-
-**`--proxy-headers` 这条值得单独说。** Render 前面挂了一层反向代理，`request.client.host` 拿到的是代理的地址，不是访客的。不加这两个参数，`app/limits.py` 按 IP 限流的那个桶就只有一个——**第一个访客打满 10 次/分钟之后，所有人都收到 429**。本地开发直接连 `127.0.0.1` 没有代理，这个坑不会自己暴露出来。
-
-`--forwarded-allow-ips="*"` 是信任所有来源的 `X-Forwarded-For`。在 Render 上是安全的（只有它的代理能把流量送到你的实例），**自己裸机部署时不要照抄**——那样客户端可以随便伪造这个头，伪造一次就换一个 IP。
-
-免费实例的三个已知限制，Demo 页底部的说明栏里也写了：
-
-- **15 分钟无请求后休眠**，下一次访问要等 30 秒以上冷启动。所以在 README 里先放一段 21 秒的录屏，而不是只给一个链接
-- **文件系统是临时的**，重启后 `index.json` 由构建产物提供、`_TICKETS` 清空——工单本来就只活一轮
-- **没有 Redis**，`build_store()` 自动退回 `MemoryStore`，单进程下行为一致；启动日志会打一条 WARNING
-
-### 依赖与容器化
-
-`requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出——后者会把无关的传递依赖一起带上，装完仍然不知道哪些是真的需要的。完整性靠两件事验证：全新的空环境装一遍跑 47 个测试，以及 GitHub Actions 每次推送在干净的 Ubuntu 上重跑。
-
-**本仓库不附带 Dockerfile**，因为它没能被构建验证过（宿主 Windows 的 `VirtualMachinePlatform` 组件反复被系统回滚）。写出来但跑不起来的 Dockerfile 比没有更糟。细节见 [docs/setup.md](docs/setup.md)。
+`.env` 每个变量的含义、多 worker、47 个测试怎么跑、PowerShell 执行策略和 Windows 版 Redis 的协议坑：**[docs/quickstart.md](docs/quickstart.md)**。部署到 Render 与免费实例的限制：**[docs/deploy.md](docs/deploy.md)**。
 
 ## 架构
 
@@ -262,7 +174,10 @@ customer-service-agent/
 ├── web/
 │   └── index.html           单页 Demo，无构建步骤，由 `/` 直接返回
 ├── docs/
+│   ├── quickstart.md        完整步骤：`.env` 每个变量、多 worker、测试
 │   ├── setup.md             环境细节：Windows Redis、容器化为什么没做
+│   ├── deploy.md            部署到 Render，`--forwarded-allow-ips` 的坑
+│   ├── api.md               接口字段、SSE 事件、日志与指标定义
 │   ├── retrieval.md         检索实验的完整数据与四条结论
 │   ├── iterations.md        九次迭代的完整复盘
 │   └── screenshots/demo.gif 线上 Demo 的 21 秒录屏
@@ -387,38 +302,7 @@ async with store.lock(session_id):
 
 线上实例的交互式文档在 [`/docs`](https://customer-service-agent-9o0y.onrender.com/docs)，直接点开就能调。
 
-### POST /chat
-
-```json
-{ "message": "订单 10001 到哪了", "session_id": null }
-```
-
-```json
-{
-  "reply": "您的订单已于 10 月 12 日签收。",
-  "session_id": "3f9c8a...",
-  "tools_used": 1,
-  "tokens": 1873,
-  "latency_ms": 1420,
-  "sources": [
-    { "type": "order", "id": "10001" }
-  ]
-}
-```
-
-| 字段 | 说明 |
-|---|---|
-| `session_id` | 不传则新建一个；后续请求带上它即可延续同一段对话 |
-| `tools_used` | 本轮调用了几次工具，上限 4 次 |
-| `tokens` | 本轮所有模型调用的 `prompt_tokens` 累计（不含输出） |
-| `latency_ms` | 只统计 `run_agent` 的耗时，不含网络传输 |
-| `sources` | 本轮工具返回过的依据，去重后按首次出现排序。订单是 `{"type":"order","id":...}`，政策是 `{"type":"policy","section":...}` |
-
-**并发语义**：同一个 `session_id` 的请求串行执行，不同 `session_id` 之间并行。原因是同一会话的两段历史是同一个列表，在 `await` 处交错写入会串消息。
-
-**这个串行在多个 worker 之间同样成立**——锁在 Redis 里，不在进程内存里。抢不到锁最多等 30 秒，超时抛 `SessionBusy`，返回 503。
-
-**状态码：**
+**错误是当契约对待的，不是随手返回 500：**
 
 | 码 | 什么时候出现 |
 |---|---|
@@ -427,68 +311,9 @@ async with store.lock(session_id):
 | `503` | 今日 token 配额用完，或同一会话的上一条还在处理中 |
 | `500` | 模型调用异常或存储不可用 |
 
-### POST /chat/stream
+**并发语义**：同一个 `session_id` 的请求串行执行，不同 `session_id` 之间并行——同一会话的两段历史是同一个列表，在 `await` 处交错写入会串消息。锁在 Redis 里，所以多个 worker 之间同样成立；抢不到锁最多等 30 秒，超时返回 503。
 
-返回 `text/event-stream`，每条消息为一行 `data: <json>`，以两个换行结束；最后一条固定是 `data: [DONE]`。
-
-```text
-data: {"type": "session", "session_id": "3f9c8a..."}
-data: {"type": "tool", "name": "search_policy"}
-data: {"type": "delta", "text": "退货运费"}
-data: {"type": "delta", "text": "由商家承担。"}
-data: {"type": "done", "token": 1873, "tool": 1}
-data: [DONE]
-```
-
-| type | 字段 | 说明 |
-|---|---|---|
-| `session` | `session_id` | 服务端确认会话，**必定是第一条** |
-| `tool` | `name` | 模型决定调用某个工具。此时正文还没有开始输出 |
-| `delta` | `text` | 增量文本，客户端直接拼接即可 |
-| `done` | `token` / `tool` / `sources` | 本轮结束，附带 token、工具调用统计和依据列表 |
-| `error` | `message` | 流中途出错。此时 HTTP 状态码已经是 200，**错误只能以事件形式下发** |
-
-```powershell
-curl.exe -N -X POST http://127.0.0.1:8000/chat/stream `
-  -H "Content-Type: application/json" `
-  -d '{\"message\":\"退货运费谁出\"}'
-```
-
-**注意 Windows PowerShell 里的 `curl` 是 `Invoke-WebRequest` 的别名**，`-N` 之类的参数会被吞掉，所以要显式写 `curl.exe`。
-
-服务端固定返回两个头：
-
-```python
-headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-```
-
-`X-Accel-Buffering: no` 是给 Nginx 看的。少了它，Nginx 会把整个响应缓冲完再一次性下发，**流式在本地测试正常、一上反向代理就退化成整段返回**。
-
-### 可观测性
-
-**每个响应都带 `X-Request-ID`。** 请求头里自己带了就沿用，没带就生成一个 12 位十六进制串。它同时出现在响应头和整条调用链的日志里——`agent.py` 里那些 `logger.info` 一行都不用改，编号靠 `ContextVar` 自动带过去。
-
-**日志是一行一条 JSON**，写到 stderr：
-
-```json
-{"ts": "2026-11-06T17:27:58", "level": "INFO", "logger": "app.api", "request_id": "3f9c8a7d21b4", "message": "request", "path": "/chat", "status": 200, "latency_ms": 1420.3}
-```
-
-纯文本日志要靠时间戳和会话 id 肉眼对齐，JSON 日志可以直接 `jq`，也可以灌进任何采集系统。
-
-**`/metrics` 暴露的指标：**
-
-| 指标 | 类型 | 标签 |
-|---|---|---|
-| `chat_requests_total` | Counter | `endpoint`、`status` |
-| `chat_duration_seconds` | Histogram | `endpoint` |
-| `chat_tokens_total` | Counter | — |
-| `chat_tool_calls_total` | Counter | `tool` |
-| `chat_rejected_total` | Counter | `reason`（`rate` / `quota`） |
-
-`endpoint` 用的是**路由模板**（`/orders/{order_id}`）而不是真实路径。直接拿 URL 做标签，每来一个新订单号就多一条时间序列，几万个订单足以把 Prometheus 的内存吃光——这是线上最常见的监控事故之一。`tool` 标签同理：模型吐出的未注册工具名一律记成 `unknown`。
-
-**`chat_duration_seconds` 对流式接口只计到「响应头就绪」**，不含后面逐字输出的时间。它量的是首帧耗时，不是端到端时长。
+请求/响应字段、SSE 的 5 种事件、`X-Request-ID` 与 `/metrics` 的指标定义 → **[docs/api.md](docs/api.md)**
 
 ## 评估
 

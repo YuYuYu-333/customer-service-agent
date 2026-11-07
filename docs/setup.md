@@ -1,6 +1,6 @@
 # 本地环境细节
 
-README 里只放最快跑起来的那条路径。会卡住人的环境细节都堆在这里。
+完整步骤见 [quickstart.md](quickstart.md)。README 里只放最快跑起来的那条路径，会卡住人的环境细节都堆在这里。
 
 ## 在 Windows 上装 Redis
 
