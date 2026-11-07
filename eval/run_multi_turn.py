@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from app.agent import SYSTEM_PROMPT, run_agent
+from app.memory import MAX_CONTEXT_TOKENS, count_tokens
 
 _EVAL_DIR = Path(__file__).resolve().parent
 _SESSIONS = _EVAL_DIR / "multi_turn.jsonl"
@@ -37,7 +38,7 @@ async def run_session(session):
     history = [{"role": "system", "content": SYSTEM_PROMPT}]
     turns = []
 
-    for turn in session["turns"]:
+    for index, turn in enumerate(session["turns"], 1):
         history.append({"role": "user", "content": turn["question"]})
         # run_agent 会把 assistant 消息和 tool 消息就地追加进 history,
         # 所以下一轮直接复用同一个列表,上下文自然接上
@@ -50,6 +51,11 @@ async def run_session(session):
             "tools_used": result.tool_calls_used,
             "tokens": result.prompt_tokens,
         })
+
+        # 打印的是「这一轮结束时历史有多大」.超过预算, 下一轮就会触发裁剪.
+        used = count_tokens(history)
+        flag = "  ← 超预算,下一轮会裁剪" if used > MAX_CONTEXT_TOKENS else ""
+        print(f"    第 {index} 轮 上下文 {used} token {flag} ")
 
     return {"id": session["id"], "topic": session["topic"], "turns": turns}
 
