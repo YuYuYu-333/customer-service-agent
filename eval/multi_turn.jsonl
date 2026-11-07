@@ -1,0 +1,8 @@
+{"id": "mt-1", "topic": "缺订单号→追问→补齐后指代", "turns": [{"question": "我买的那瓶防晒霜到哪了", "expect_keywords": ["订单号"]}, {"question": "订单10065", "expect_keywords": ["SF7897897890"]}, {"question": "它是什么时候下的单", "expect_keywords": ["2026-10-28"]}]}
+{"id": "mt-2", "topic": "比较结果指代", "turns": [{"question": "订单10003和订单10005哪个贵", "expect_keywords": ["10005"]}, {"question": "贵的那单是什么商品", "expect_keywords": ["机械键盘"]}, {"question": "它优惠了多少", "expect_keywords": ["300"]}]}
+{"id": "mt-3", "topic": "订单事实与政策联合", "turns": [{"question": "订单10001多少钱", "expect_keywords": ["199"]}, {"question": "它什么时候下的单", "expect_keywords": ["2026-10-12"]}, {"question": "那如果我要退货，运费谁出", "expect_keywords": ["商家承担"]}]}
+{"id": "mt-4", "topic": "政策追问链", "turns": [{"question": "七天无理由是怎么算的", "expect_keywords": ["自然日"]}, {"question": "从哪天开始算", "expect_keywords": ["签收"]}, {"question": "那吊牌剪了还符合吗", "expect_keywords": ["吊牌"]}]}
+{"id": "mt-5", "topic": "跨订单比较后的指代", "turns": [{"question": "订单10060和订单10062哪个先下单", "expect_keywords": ["10060"]}, {"question": "早的那单是什么", "expect_keywords": ["电饭煲"]}, {"question": "它发货了吗", "expect_keywords": ["已发货"]}]}
+{"id": "mt-6", "topic": "同单跨轮算术", "turns": [{"question": "订单10007的原价是多少", "expect_keywords": ["1499"]}, {"question": "那现在卖多少钱", "expect_keywords": ["1299"]}, {"question": "所以我省了多少", "expect_keywords": ["200"]}]}
+{"id": "mt-7", "topic": "多对象记忆", "turns": [{"question": "订单10001多少钱", "expect_keywords": ["199"]}, {"question": "订单10002呢", "expect_keywords": ["4999"]}, {"question": "这两个加起来多少", "expect_keywords": ["5198"]}]}
+{"id": "mt-8", "topic": "错误前提纠正", "turns": [{"question": "订单10001是手机对吧", "expect_keywords": ["无线蓝牙耳机"]}, {"question": "那它多少钱", "expect_keywords": ["199"]}, {"question": "我买的时候原价多少", "expect_keywords": ["259"]}]}
