@@ -20,13 +20,6 @@ from app.session_store import MemoryStore
 client = TestClient(api.app)
 
 
-@pytest.fixture(autouse=True)
-def clear_sessions():
-    """每个测试前清空会话字典,避免测试之间互相污染."""
-    api._sessions.clear()
-    yield
-
-
 @pytest.fixture
 def fake_agent(monkeypatch):
     """把 run_agent 换成立刻返回的假函数,不发任何网络请求."""

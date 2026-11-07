@@ -10,7 +10,7 @@ from pathlib import Path
 from app.llm import EMBED_MODEL, embed_client
 from app.text import chunk, load_policy
 
-# 检索返回的块数.政策文档共 7 块,取 5 块是为了覆盖复合问题:
+# 检索返回的块数.政策文档共 40 块,取 5 块是为了覆盖复合问题:
 # 用户一句话里问两件事时,单一 query 会偏向其中一件,只取 3 块会漏掉另一件的依据.
 # 代价是噪音变多,阶段 9 用混合检索和 rerank 收敛.
 TOP_K = 5

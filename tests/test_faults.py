@@ -36,12 +36,6 @@ def test_tool_timeout_returns_error(monkeypatch):
     assert "超时" in json.loads(content)["error"]
     assert sources == []
 
-@pytest.fixture(autouse=True)
-def _clean_sessions():
-    api._sessions.clear()
-    yield
-    api._sessions.clear()
-
 
 def _spy_agent(monkeypatch):
     """替换 run_agent, 记录同时执行的最大数量."""

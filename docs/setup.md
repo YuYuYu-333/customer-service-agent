@@ -45,7 +45,7 @@ REDIS_URL=redis://127.0.0.1:6379/0
 
 完整性验证方式有两个：
 
-1. 本地建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，43 个测试全部通过
+1. 本地建一个全新的空虚拟环境，`pip install -r requirements-dev.txt`，47 个测试全部通过
 2. **GitHub Actions 每次推送都在干净的 Ubuntu 上重跑一遍**，结果见仓库首页的 `tests` 徽章
 
 ## Linux / macOS

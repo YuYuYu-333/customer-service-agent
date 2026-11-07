@@ -33,7 +33,7 @@
 | **答案溯源** | 每条回答附带本轮查过的订单号或政策小节，`/chat` 和 SSE 的 `done` 事件都返回 |
 | **会话与并发** | 会话外置到 Redis，锁的粒度是**会话**而不是全局——同会话串行、跨会话并行，两个 worker 并发同一个会话不丢消息 |
 
-另外：按 IP 限流 10 次/分钟、每日 token 配额 100 万、16 个故障场景有明确定义的行为、43 个测试不调用真实模型。
+另外：按 IP 限流 10 次/分钟、每日 token 配额 100 万、16 个故障场景有明确定义的行为、47 个测试不调用真实模型。
 
 **技术栈**：Python 3.13 · FastAPI · asyncio · SSE · Redis · DeepSeek · Function Calling · bge-m3 · Prometheus · pytest
 
@@ -130,7 +130,7 @@ uvicorn app.api:app --workers 2
 pytest
 ```
 
-43 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
+47 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
 
 ## 部署
 
@@ -157,7 +157,7 @@ pytest
 
 ### 依赖与容器化
 
-`requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出——后者会把无关的传递依赖一起带上，装完仍然不知道哪些是真的需要的。完整性靠两件事验证：全新的空环境装一遍跑 43 个测试，以及 GitHub Actions 每次推送在干净的 Ubuntu 上重跑。
+`requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出——后者会把无关的传递依赖一起带上，装完仍然不知道哪些是真的需要的。完整性靠两件事验证：全新的空环境装一遍跑 47 个测试，以及 GitHub Actions 每次推送在干净的 Ubuntu 上重跑。
 
 **本仓库不附带 Dockerfile**，因为它没能被构建验证过（宿主 Windows 的 `VirtualMachinePlatform` 组件反复被系统回滚）。写出来但跑不起来的 Dockerfile 比没有更糟。细节见 [docs/setup.md](docs/setup.md)。
 
@@ -266,7 +266,7 @@ customer-service-agent/
 │   ├── retrieval.md         检索实验的完整数据与四条结论
 │   ├── iterations.md        九次迭代的完整复盘
 │   └── screenshots/demo.gif 线上 Demo 的 21 秒录屏
-├── tests/                   43 个测试
+├── tests/                   47 个测试
 ├── requirements.txt         直接依赖（手工整理）
 └── requirements-dev.txt     + pytest
 ```

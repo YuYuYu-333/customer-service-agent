@@ -162,6 +162,7 @@ async def run_agent_stream(messages):
         view = trim(messages)
 
         if len(view) < len(messages):
+            logger.info("触发裁剪: %d 条 -> %d 条", len(messages), len(view))
             note = pinned_questions(messages)
             if note:
                 system = messages[0]
@@ -240,74 +241,20 @@ async def run_agent_stream(messages):
 
 
 async def run_agent(messages):
-    """
-    跑完一次完整的 Agent 循环,返回本轮的回答和工具调用次数
+    """跑完一次完整的 Agent 循环,返回本轮的回答和工具调用次数
     :param messages: 完整对话历史,含 system 和本轮用户消息.函数会就地追加内容
     :return: AgentResult,含 reply 和 tool_calls_used
     """
-    tool_calls_used = 0
-    tools_enabled = True
-    prompt_tokens = 0
-    sources = []
-
-    while True:
-        # 每轮重新裁剪:循环里刚追加的工具消息必须出现在下一次请求里.
-        # messages 本身始终完整,所以 pinned 永远取得到最早的提问.
-        view = trim(messages)
-
-        # 只有真的裁过才注入,否则正常对话会被"你看不全"这类提示污染.
-        if len(view) < len(messages):
-            logger.info("触发裁剪: %d 条 -> %d 条", len(messages), len(view))
-            note = pinned_questions(messages)
-            if note:
-                system = messages[0]
-                view = [{"role": "system", "content": system["content"] + "\n\n" + note}] + view[1:]
-
-        response = await chat_client.chat.completions.create(
-            model=CHAT_MODEL,
-            messages=view,
-            # 预算用完后传 None, SDK 会把这个字段整个省掉, 模型就调不了工具了.
-            tools=TOOLS if tools_enabled else None,
-            stream=False,
-        )
-        prompt_tokens += response.usage.prompt_tokens
-        message = response.choices[0].message
-
-        # 先写回历史:下一轮模型要靠它看见自己上一轮说过什么, 点过哪些工具.
-        # 存纯字典,不存SDK 对象:会话要能序列化落盘(Redis),对象存不进去.
-        entry = {"role": "assistant", "content": message.content}
-        if message.tool_calls:
-            entry["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in message.tool_calls
-            ]
-        messages.append(entry)
-
-        if not message.tool_calls:
-            return AgentResult(message.content, tool_calls_used, prompt_tokens, _dedup(sources))
-
-        for tool_call in message.tool_calls:
-            if tool_calls_used < MAX_TOOL_CALLS:
-                tool_calls_used += 1
-                content, found = await _run_tool(tool_call)
-            else:
-                tools_enabled = False
-                content, found = _BUDGET_EXCEEDED, []
-            sources.extend(found)
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": content,
-                }
+    reply = []
+    async for event in run_agent_stream(messages):
+        if event["type"] == "delta":
+            reply.append(event["text"])
+        elif event["type"] == "done":
+            return AgentResult(
+                "".join(reply),
+                event["tool"],
+                event["token"],
+                tuple(event["sources"]),
             )
 
 
