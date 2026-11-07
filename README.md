@@ -4,7 +4,13 @@
 
 基于 RAG + Function Calling 的电商客服 Agent。模型在对话中自己决定调用哪个工具——查订单、算差价、数下单天数、检索售后政策、记转人工工单——拿到结果后继续判断要不要再查，**直到它不再请求工具为止**。链路上的事实全部来自工具返回，**不靠模型自身的记忆**。
 
-**评测**：60 题 **59 过（98.3%）** · 检索 `recall@5` 14/15 · 多轮 45 轮 **44 过** · 端到端延迟中位 **2.4s**，不调工具时首字 1.04s
+**评测**：60 题 **59 过（98.3%）** · 检索 `recall@5` 14/15 · 多轮 45 轮 **44 过** · 端到端延迟中位 **2.4s**、不调工具时首字 1.04s（本机实测，主循环合并前）
+
+> **这些数字的边界**：
+>
+> - **单次运行**：模型有随机性，同一套题重复跑结果会波动，本报告不代表稳定水平
+> - **判定依赖 LLM 裁判**：裁判本身是概率性的，会误判；关键词判定则存在假阴性。**而且这个裁判就是被测的那个模型**
+> - **题库由开发者编写**：可能存在无意识贴合自身实现表述的偏差，也可能标错类型——`refusal-2` 就错过一次
 
 ## 在线演示
 
@@ -71,6 +77,8 @@ uvicorn app.api:app --reload
 
 打开 <http://127.0.0.1:8000> 就能直接问。Redis 不装也能跑，单进程会退回进程内存。
 
+`pytest` 不需要真实密钥，但 `config.py` 在 import 阶段就校验，所以**没有 `.env` 会在收集阶段直接报错**。用 `DEEPSEEK_API_KEY=dummy SILICONFLOW_API_KEY=dummy` 顶替也行，CI 就是这么跑的。
+
 `.env` 每个变量的含义、多 worker、47 个测试怎么跑、PowerShell 执行策略和 Windows 版 Redis 的协议坑：**[docs/quickstart.md](docs/quickstart.md)**。部署到 Render 与免费实例的限制：**[docs/deploy.md](docs/deploy.md)**。
 
 ## 架构
@@ -106,21 +114,22 @@ metrics / logging  ←  api, agent
 ### 一次请求的完整流程
 
 ```
-POST /chat  { message, session_id }
+POST /chat | /chat/stream  { message, session_id }
   │
   ├─ store.lock(session_id)               ← 同会话串行，跨会话并行，跨进程也串行
   ├─ store.load(session_id)               ← 无则新建，首条是 SYSTEM_PROMPT
   ├─ 追加 user 消息
   │
-  ├─ run_agent(history)
-       │
-       └─ while True:
-            ├─ trim()            超预算则裁剪，并把最早的问题钉回 system
-            ├─ 调 chat_client     带上 tools=TOOLS
-            ├─ 没有 tool_calls ─────────────→ 返回 AgentResult，结束
-            └─ 有 tool_calls:
-                 ├─ 预算内 → 执行工具 → 结果以 role=tool 追加回历史
-                 └─ 预算外 → 返回结构化错误，下一轮不再传 tools
+  ├─ run_agent(history)                   ← /chat 走这条：消费事件，拼成 AgentResult
+  │    └─ run_agent_stream(history)       ← /chat/stream 直接调它，逐条下发事件
+  │         │
+  │         └─ while True:
+  │              ├─ trim()                超预算则裁剪，并把最早的问题钉回 system
+  │              ├─ 调 chat_client         带上 tools=TOOLS
+  │              ├─ 没有 tool_calls ────────────→ yield done，结束
+  │              └─ 有 tool_calls:
+  │                   ├─ 预算内 → 执行工具 → 结果以 role=tool 追加回历史
+  │                   └─ 预算外 → 返回结构化错误，下一轮不再传 tools
   │
   ├─ 正常结束 → store.save(session_id, history) → 200
   └─ 抛异常   → 不保存 → 500
@@ -141,7 +150,7 @@ POST /chat  { message, session_id }
 customer-service-agent/
 ├── app/
 │   ├── api.py               FastAPI：7 个端点、SSE、会话读写调用
-│   ├── agent.py             Agent 循环（同步版 + 流式版）
+│   ├── agent.py             Agent 循环（run_agent_stream 实现 + run_agent 适配）
 │   ├── tools.py             5 个工具实现 + 注册表
 │   ├── rag.py               向量检索
 │   ├── memory.py            token 计量、历史裁剪、最早问题钉回
@@ -545,7 +554,7 @@ easy 集数据、另外两条结论、以及怎么换检索器，见 [docs/retri
 | 工具异常文本可能被转述给用户 | 靠 system prompt 约束，属于软约束 | 输出侧加一层过滤，或者错误里不带原始 `{exc}` |
 | 模型可以绕过工具自己心算 | 用户直接报出一组价格时，模型可能不调用 `calculate_discount`，自己算出结果。签名只堵住了「调工具时传假价格」这条路，堵不住「压根不调工具」 | 关键数字一律由工具产出并在回复里标注来源；或输出侧校验回复中的金额是否出现在工具返回里 |
 | `sources` 只说明查过什么，不说明引用了什么 | 模型可能查了三节政策只用了其中一节，接口会把三节都列出来 | 回答里做引用匹配，或要求模型输出 `[1][2]` 标记并校验 |
-| `agent.py` 主循环没有单元测试 | 流式 `tool_calls` 按 index 分片拼装、预算耗尽后每个 `tool_call` 必须补一条 `tool` 消息，这两条错了只会在真实模型下才暴露 | 用假的模型响应补测试，覆盖分片拼装与预算耗尽两条路径 |
+| `agent.py` 主循环的测试用的是手捏的 chunk | 分片拼装、并行 index、依据去重、事件拼成 `AgentResult` 都覆盖了；但 chunk 形状是按协议手写的，真实模型的分片顺序若与协议不符，这套测试发现不了 | 录一次真实响应的 chunk 序列存成固定样本，用同一组断言跑它 |
 | `RedisStore` 没有自动测试 | 锁的 Lua、计数器的 TTL 全靠手工验证；单进程用 `MemoryStore` 时这套代码根本不会执行 | 起一个 Redis 容器补集成测试，至少覆盖抢锁、解锁、计数器过期 |
 | 工单只存在进程内存里 | `_TICKETS` 是个模块级列表，重启即清空，多 worker 之间也互相看不见 | 落到 Redis 或数据库；再往前一步是接真的工单系统 |
 | 转人工的触发条件只有提示词约束 | 模型该转不转、或者见谁都转，代码层面没有任何拦截 | 输出侧校验：出现「退款」「取消」等词却没调 `create_ticket` 时打日志告警；或把分类改成独立的一次模型调用 |
