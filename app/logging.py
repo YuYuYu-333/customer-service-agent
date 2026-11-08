@@ -34,8 +34,10 @@ def setup_logging() -> None:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
-    root.handler = [handler]
+    root.handlers = [handler]
     root.setLevel(logging.INFO)
-    # uvicorn 自带 handler,不摘掉会打两份
+    # uvicorn 自带 handler,不摘掉会打两份再打开向上传递：否则它既不自己打、也到不了 root
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logging.getLogger(name).handlers = []
+        logger = logging.getLogger(name)
+        logger.handlers = []
+        logger.propagate = True

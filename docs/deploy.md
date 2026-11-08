@@ -27,6 +27,6 @@ Demo 页底部的说明栏里也写了：
 
 ## 依赖与容器化
 
-`requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出——后者会把无关的传递依赖一起带上，装完仍然不知道哪些是真的需要的。完整性靠两件事验证：全新的空环境装一遍跑 47 个测试，以及 GitHub Actions 每次推送在干净的 Ubuntu 上重跑。
+`requirements.txt` 是手工整理的直接依赖，不是 `pip freeze` 导出——后者会把无关的传递依赖一起带上，装完仍然不知道哪些是真的需要的。完整性靠两件事验证：全新的空环境装一遍跑 48 个测试，以及 GitHub Actions 每次推送在干净的 Ubuntu 上重跑。
 
 **本仓库不附带 Dockerfile**，因为它没能被构建验证过（宿主 Windows 的 `VirtualMachinePlatform` 组件反复被系统回滚）。写出来但跑不起来的 Dockerfile 比没有更糟。细节见 [setup.md](setup.md)。

@@ -76,7 +76,7 @@ uvicorn app.api:app --workers 2
 pytest
 ```
 
-47 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
+48 个测试，不调用真实模型（`app.api.run_agent` 在测试中被替换）。测试用 `MemoryStore`，**不需要 Redis 在跑**。
 
 ## 7. 上线
 

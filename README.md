@@ -39,7 +39,7 @@
 | **答案溯源** | 每条回答附带本轮查过的订单号或政策小节，`/chat` 和 SSE 的 `done` 事件都返回 |
 | **会话与并发** | 会话外置到 Redis，锁的粒度是**会话**而不是全局——同会话串行、跨会话并行，两个 worker 并发同一个会话不丢消息 |
 
-另外：按 IP 限流 10 次/分钟、每日 token 配额 100 万、16 个故障场景有明确定义的行为、47 个测试不调用真实模型。
+另外：按 IP 限流 10 次/分钟、每日 token 配额 100 万、16 个故障场景有明确定义的行为、48 个测试不调用真实模型。
 
 **技术栈**：Python 3.13 · FastAPI · asyncio · SSE · Redis · DeepSeek · Function Calling · bge-m3 · Prometheus · pytest
 
@@ -56,7 +56,7 @@
 | 怎么证明它是对的 | [评估](#评估) |
 | 16 个故障场景的定义行为 | [故障处理](#故障处理) |
 | 21 条已知局限，每条都写了该怎么改 | [已知局限](#已知局限) |
-| 九次「没有报错但结果是错的」 | [迭代记录](#迭代记录) |
+| 十次「没有报错但结果是错的」 | [迭代记录](#迭代记录) |
 | 完整细节：快速开始、部署、接口、检索实验、迭代复盘 | [docs/](docs/) |
 | 许可 | [许可](#许可) |
 
@@ -79,7 +79,7 @@ uvicorn app.api:app --reload
 
 `pytest` 不需要真实密钥，但 `config.py` 在 import 阶段就校验，所以**没有 `.env` 会在收集阶段直接报错**。用 `DEEPSEEK_API_KEY=dummy SILICONFLOW_API_KEY=dummy` 顶替也行，CI 就是这么跑的。
 
-`.env` 每个变量的含义、多 worker、47 个测试怎么跑、PowerShell 执行策略和 Windows 版 Redis 的协议坑：**[docs/quickstart.md](docs/quickstart.md)**。部署到 Render 与免费实例的限制：**[docs/deploy.md](docs/deploy.md)**。
+`.env` 每个变量的含义、多 worker、48 个测试怎么跑、PowerShell 执行策略和 Windows 版 Redis 的协议坑：**[docs/quickstart.md](docs/quickstart.md)**。部署到 Render 与免费实例的限制：**[docs/deploy.md](docs/deploy.md)**。
 
 ## 架构
 
@@ -188,9 +188,9 @@ customer-service-agent/
 │   ├── deploy.md            部署到 Render，`--forwarded-allow-ips` 的坑
 │   ├── api.md               接口字段、SSE 事件、日志与指标定义
 │   ├── retrieval.md         检索实验的完整数据与四条结论
-│   ├── iterations.md        九次迭代的完整复盘
+│   ├── iterations.md        十次迭代的完整复盘
 │   └── screenshots/demo.gif 线上 Demo 的 21 秒录屏
-├── tests/                   47 个测试
+├── tests/                   48 个测试
 ├── requirements.txt         直接依赖（手工整理）
 └── requirements-dev.txt     + pytest
 ```
@@ -561,7 +561,7 @@ easy 集数据、另外两条结论、以及怎么换检索器，见 [docs/retri
 
 ## 迭代记录
 
-九个都是**没有任何报错、但结果是错的**问题。完整复盘（现象 / 发现 / 根因 / 修复）在 [docs/iterations.md](docs/iterations.md)。
+十个都是**没有任何报错、但结果是错的**问题。完整复盘（现象 / 发现 / 根因 / 修复）在 [docs/iterations.md](docs/iterations.md)。
 
 | # | 问题 | 一句话 |
 |---|---|---|
@@ -574,8 +574,9 @@ easy 集数据、另外两条结论、以及怎么换检索器，见 [docs/retri
 | 7 | 数据一换两道题答案就错了 | 评测集和系统各自演化，系统改了、题目不跟着改 |
 | 8 | 20/20 里有一道是运气 | `refusal-2` 标错类型，模型的措辞恰好让裁判放了行 |
 | 9 | 多轮评测第一段三轮全红 | 题目假设系统能按商品名查单，实际工具只收订单号——错的是题，不是模型 |
+| 10 | 日志一条都没打出来 | `root.handler` 少写一个 s，root 从未装过 handler，INFO 全部进了黑洞 |
 
-前六次错在代码，第七到第九次错在**测量工具本身**——一把坏掉的尺子比一把不准的尺子更难发现，因为它每次都用同样的方式读错。
+前六次和第十次错在代码，中间三次错在**测量工具本身**——一把坏掉的尺子比一把不准的尺子更难发现，因为它每次都用同样的方式读错。第十次尤其讽刺：坏掉的正是该用来发现问题的日志。
 
 
 ## 许可
